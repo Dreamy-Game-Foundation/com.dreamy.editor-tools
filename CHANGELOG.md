@@ -2,6 +2,13 @@
 
 All notable changes to this package will be documented in this file.
 
+## [0.2.1] - 2026-06-07
+
+### Fixed
+
+- Replaced ScriptableSingleton build settings with project-scoped EditorPrefs JSON
+- Prevented duplicate singleton creation during Package Manager initialization
+
 ## [0.2.0] - 2026-06-07
 
 ### Added
