@@ -1,0 +1,21 @@
+{
+  "name": "com.dreamy.editor-tools",
+  "version": "0.2.0",
+  "displayName": "Dreamy Editor Tools",
+  "description": "Editor-only utilities for Dreamy internal Unity projects.",
+  "unity": "6000.0",
+  "type": "library",
+  "license": "UNLICENSED",
+  "author": {
+    "name": "Dreamy Studio"
+  },
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
+  "keywords": [
+    "editor",
+    "tools",
+    "workflow",
+    "dreamy"
+  ]
+}
