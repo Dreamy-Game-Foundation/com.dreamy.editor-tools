@@ -8,8 +8,8 @@ Editor-only utilities for Dreamy internal Unity projects.
 - Find all project scenes or add the open/selected scene.
 - Enable, disable, reorder, remove, and open Build Settings scenes.
 - Put the bootstrap scene first and remove missing scene entries.
-- Enable `Dreamy Play Toolbar` from the Scene View Overlays menu for previous,
-  next, reload, scene selection, Play From Bootstrap, and Time Scale controls.
+- Use the Dreamy controls beside Unity's Play controls for previous, next,
+  reload, scene selection, Play From Bootstrap, and Time Scale.
 
 ## Package Tools
 
