@@ -74,6 +74,7 @@ namespace Dreamy.EditorTools
         private readonly Dictionary<string, Vector2> tableScroll = new Dictionary<string, Vector2>();
         private readonly Dictionary<string, string> tableFilter = new Dictionary<string, string>();
         private readonly Dictionary<string, float> columnWidths = new Dictionary<string, float>();
+        private string resizingColumnKey = "";
 
         private string selectedTablePath = "";
         private int selectedRowIndex = -1;
@@ -121,6 +122,7 @@ namespace Dreamy.EditorTools
         {
             InitStyles();
             HandleKeyboard();
+            HandleColumnResizeDrag();
             DrawToolbar();
 
             float bodyY = ToolbarHeight;
@@ -131,6 +133,130 @@ namespace Dreamy.EditorTools
             DrawContent(new Rect(sidebarWidth + SplitterWidth, bodyY, position.width - sidebarWidth - SplitterWidth, bodyH));
             DrawStatus(new Rect(0, position.height - StatusHeight, position.width, StatusHeight));
         }
+
+
+        private void HandleKeyboard()
+        {
+            Event e = Event.current;
+            if (e == null || e.type != EventType.KeyDown)
+                return;
+
+            bool command = e.control || e.command;
+
+            if (command && e.keyCode == KeyCode.S)
+            {
+                SaveCurrent();
+                e.Use();
+                return;
+            }
+
+            if (e.keyCode == KeyCode.Escape)
+            {
+                selectedTablePath = "";
+                selectedRowIndex = -1;
+                selectedColumnKey = "";
+                selectedCellRow = -1;
+                GUI.FocusControl(null);
+                Repaint();
+                e.Use();
+                return;
+            }
+
+            JArray selectedArray = GetSelectedArray();
+            if (selectedArray == null || selectedRowIndex < 0 || selectedRowIndex >= selectedArray.Count)
+                return;
+
+            if (command && e.keyCode == KeyCode.C)
+            {
+                CopyRow(selectedArray, selectedRowIndex);
+                e.Use();
+                return;
+            }
+
+            if (command && e.keyCode == KeyCode.V)
+            {
+                PasteRow(selectedArray, selectedTablePath, selectedRowIndex + 1);
+                e.Use();
+                return;
+            }
+
+            if (command && e.keyCode == KeyCode.D)
+            {
+                DuplicateRow(selectedArray, selectedTablePath, selectedRowIndex);
+                e.Use();
+                return;
+            }
+
+            if (e.keyCode == KeyCode.Delete || e.keyCode == KeyCode.Backspace)
+            {
+                DeleteRow(selectedArray, selectedRowIndex);
+                e.Use();
+                return;
+            }
+
+            if (command && e.keyCode == KeyCode.UpArrow)
+            {
+                MoveRowTo(selectedArray, selectedRowIndex, selectedRowIndex - 1);
+                e.Use();
+                return;
+            }
+
+            if (command && e.keyCode == KeyCode.DownArrow)
+            {
+                MoveRowTo(selectedArray, selectedRowIndex, selectedRowIndex + 2);
+                e.Use();
+                return;
+            }
+
+            if (!command && e.keyCode == KeyCode.UpArrow)
+            {
+                selectedRowIndex = Mathf.Clamp(selectedRowIndex - 1, 0, selectedArray.Count - 1);
+                Repaint();
+                e.Use();
+                return;
+            }
+
+            if (!command && e.keyCode == KeyCode.DownArrow)
+            {
+                selectedRowIndex = Mathf.Clamp(selectedRowIndex + 1, 0, selectedArray.Count - 1);
+                Repaint();
+                e.Use();
+            }
+        }
+
+        private JArray GetSelectedArray()
+        {
+            if (rootToken == null || string.IsNullOrEmpty(selectedTablePath))
+                return null;
+
+            return FindArrayByPath(rootToken, selectedTablePath);
+        }
+
+        private JArray FindArrayByPath(JToken root, string path)
+        {
+            if (root == null || string.IsNullOrEmpty(path))
+                return null;
+
+            if (path == "root")
+                return root as JArray;
+
+            string[] parts = path.Split('.');
+            JToken current = root;
+
+            for (int i = 1; i < parts.Length; i++)
+            {
+                if (current is JObject obj && obj.TryGetValue(parts[i], out JToken next))
+                {
+                    current = next;
+                    continue;
+                }
+
+                return null;
+            }
+
+            return current as JArray;
+        }
+
 
         private void InitStyles()
         {
@@ -187,6 +313,30 @@ namespace Dreamy.EditorTools
             return EditorStyles.textArea.font;
         }
 
+        private void HandleColumnResizeDrag()
+        {
+            if (string.IsNullOrEmpty(resizingColumnKey))
+                return;
+
+            Event e = Event.current;
+            if (e == null)
+                return;
+
+            if (e.type == EventType.MouseDrag)
+            {
+                float current = columnWidths.TryGetValue(resizingColumnKey, out float width) ? width : CellDefaultWidth;
+                columnWidths[resizingColumnKey] = Mathf.Clamp(current + e.delta.x, CellMinWidth, CellMaxWidth);
+                e.Use();
+                Repaint();
+            }
+            else if (e.type == EventType.MouseUp || e.rawType == EventType.MouseUp)
+            {
+                resizingColumnKey = "";
+                e.Use();
+                Repaint();
+            }
+        }
+
         private void DrawToolbar()
         {
             GUILayout.BeginArea(new Rect(0, 0, position.width, ToolbarHeight));
@@ -224,6 +374,9 @@ namespace Dreamy.EditorTools
 
                 if (GUILayout.Button("Format", EditorStyles.toolbarButton, GUILayout.Width(64f)))
                     FormatJson();
+
+                if (GUILayout.Button("Validate", EditorStyles.toolbarButton, GUILayout.Width(72f)))
+                    ValidateCurrent();
 
                 if (GUILayout.Button("Reveal", EditorStyles.toolbarButton, GUILayout.Width(62f)))
                     RevealCurrent();
@@ -590,18 +743,11 @@ namespace Dreamy.EditorTools
                         {
                             string key = columns[c];
                             Rect cell = new Rect(x + 1, rowRect.y + 2, widths[c] - 2, RowHeight - 4);
-                            JToken current = rowObject.TryGetValue(key, out JToken v) ? v : JValue.CreateNull();
+                            JToken current = GetCell(rowToken, key);
 
                             DrawValueField(current, cell, delegate(JToken token)
                             {
-                                JObject target = arr[rowIndex] as JObject;
-                                if (target == null)
-                                {
-                                    target = new JObject();
-                                    arr[rowIndex] = target;
-                                }
-
-                                target[key] = token ?? JValue.CreateNull();
+                                SetCellNoNotify(arr, rowIndex, key, token ?? JValue.CreateNull());
                                 selectedCellRow = rowIndex;
                                 selectedColumnKey = key;
                                 SelectRow(path, rowIndex);
@@ -718,7 +864,16 @@ namespace Dreamy.EditorTools
 
                 if (cell.xMax >= 0 && cell.x <= visibleWidth)
                 {
-                    GUI.Label(new Rect(cell.x + 4, cell.y + 2, cell.width - 8, cell.height - 4), key, headerStyle);
+                    GUI.Label(new Rect(cell.x + 4, cell.y + 2, cell.width - 14, cell.height - 4), key, headerStyle);
+
+                    Rect resizeRect = new Rect(cell.xMax - 5, cell.y, 10, cell.height);
+                    EditorGUIUtility.AddCursorRect(resizeRect, MouseCursor.ResizeHorizontal);
+                    EditorGUI.DrawRect(new Rect(cell.xMax - 1, cell.y + 4, 1, cell.height - 8), new Color(0.36f, 0.42f, 0.58f, 0.9f));
+                    if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && resizeRect.Contains(Event.current.mousePosition))
+                    {
+                        resizingColumnKey = path + "." + key;
+                        Event.current.Use();
+                    }
 
                     if (Event.current.type == EventType.ContextClick && cell.Contains(Event.current.mousePosition))
                     {
@@ -806,6 +961,7 @@ namespace Dreamy.EditorTools
             {
                 SelectRow(path, rowIndex);
                 Repaint();
+                // Do not consume the click here. Cells still need the same mouse event to focus/edit.
             }
 
             if (Event.current.type == EventType.ContextClick && rowRect.Contains(Event.current.mousePosition))
@@ -925,6 +1081,8 @@ namespace Dreamy.EditorTools
         {
             GenericMenu menu = new GenericMenu();
             menu.AddItem(new GUIContent("Copy TSV"), false, delegate { CopyTsv(arr, GetColumns(arr), GetVisibleRows(arr, path)); });
+            menu.AddItem(new GUIContent("Export CSV"), false, delegate { ExportCsv(arr, GetColumns(arr), GetVisibleRows(arr, path)); });
+            menu.AddSeparator("");
             menu.AddItem(new GUIContent("Paste TSV Append"), false, delegate { PasteTsv(arr, false); });
             menu.AddItem(new GUIContent("Paste TSV Replace"), false, delegate { PasteTsv(arr, true); });
             menu.ShowAsContext();
@@ -1108,7 +1266,7 @@ namespace Dreamy.EditorTools
         {
             if (row < 0 || row >= arr.Count) return;
 
-            if (key == "value" && !(arr[row] is JObject))
+            if (key == "row_json" || (key == "value" && !(arr[row] is JObject)))
             {
                 arr[row] = value ?? JValue.CreateNull();
             }
@@ -1148,9 +1306,9 @@ namespace Dreamy.EditorTools
 
         private void SetCellNoNotify(JArray arr, int row, string key, JToken value)
         {
-            if (key == "value" && !(arr[row] is JObject))
+            if (key == "row_json" || (key == "value" && !(arr[row] is JObject)))
             {
-                arr[row] = value;
+                arr[row] = value ?? JValue.CreateNull();
                 return;
             }
 
@@ -1242,6 +1400,43 @@ namespace Dreamy.EditorTools
 
             EditorGUIUtility.systemCopyBuffer = values.ToString(Formatting.Indented);
             SetStatus("Column JSON copied.", MessageType.Info);
+        }
+
+        private void ExportCsv(JArray arr, List<string> columns, List<int> rows)
+        {
+            string defaultName = HasSelectedFile() ? Path.GetFileNameWithoutExtension(CurrentFile.DisplayName) + ".csv" : "table.csv";
+            string savePath = EditorUtility.SaveFilePanel("Export CSV", Application.dataPath, defaultName, "csv");
+            if (string.IsNullOrEmpty(savePath))
+                return;
+
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine(string.Join(",", columns.Select(EscapeCsv)));
+
+                foreach (int rowIndex in rows)
+                {
+                    List<string> cells = new List<string>();
+                    foreach (string col in columns)
+                        cells.Add(EscapeCsv(TokenToText(GetCell(arr[rowIndex], col))));
+                    sb.AppendLine(string.Join(",", cells));
+                }
+
+                File.WriteAllText(savePath, sb.ToString(), new UTF8Encoding(true));
+                SetStatus("CSV exported: " + Path.GetFileName(savePath), MessageType.Info);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("CSV export failed: " + ex.Message, MessageType.Error);
+            }
+        }
+
+        private static string EscapeCsv(string value)
+        {
+            value = value ?? "";
+            bool quote = value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
+            value = value.Replace("\"", "\"\"");
+            return quote ? "\"" + value + "\"" : value;
         }
 
         private void CopyTsv(JArray arr, List<string> columns, List<int> rows)
@@ -1879,6 +2074,71 @@ namespace Dreamy.EditorTools
                 parseErrorMessage = ex.Message;
                 viewMode = ViewMode.Visual;
             }
+        }
+
+        private void ValidateCurrent()
+        {
+            JToken token = null;
+
+            if (viewMode == ViewMode.Visual && rootToken != null)
+            {
+                token = rootToken;
+            }
+            else
+            {
+                try
+                {
+                    token = JToken.Parse(editText);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Invalid JSON: " + ex.Message, MessageType.Error);
+                    return;
+                }
+            }
+
+            List<string> warnings = new List<string>();
+            CollectValidationWarnings(token, "$", warnings);
+            if (warnings.Count == 0)
+            {
+                SetStatus("JSON valid. No table warning found.", MessageType.Info);
+                EditorUtility.DisplayDialog(WindowTitle, "JSON is valid.", "OK");
+            }
+            else
+            {
+                string msg = string.Join("\n", warnings.Take(30).ToArray());
+                SetStatus("JSON valid with " + warnings.Count + " warning(s).", MessageType.Warning);
+                EditorUtility.DisplayDialog(WindowTitle, "JSON is valid but has warning(s):\n\n" + msg, "OK");
+            }
+        }
+
+        private void CollectValidationWarnings(JToken token, string path, List<string> warnings)
+        {
+            if (token is JObject obj)
+            {
+                foreach (JProperty prop in obj.Properties())
+                    CollectValidationWarnings(prop.Value, path + "." + prop.Name, warnings);
+                return;
+            }
+
+            if (!(token is JArray arr))
+                return;
+
+            List<JObject> objects = arr.OfType<JObject>().ToList();
+            if (objects.Count > 0)
+            {
+                var duplicateIds = objects
+                    .Select((row, index) => new { Index = index, Id = (row["id"] ?? row["Id"] ?? row["ID"])?.Value<string>() })
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Id))
+                    .GroupBy(x => x.Id)
+                    .Where(group => group.Count() > 1);
+
+                foreach (var group in duplicateIds)
+                    warnings.Add(path + ": duplicate id '" + group.Key + "' at rows " + string.Join(", ", group.Select(x => (x.Index + 1).ToString()).ToArray()));
+            }
+
+            for (int i = 0; i < arr.Count; i++)
+                CollectValidationWarnings(arr[i], path + "[" + i + "]", warnings);
         }
 
         private void ReloadCurrent()
