@@ -284,7 +284,7 @@ namespace Dreamy.EditorTools.Scene
                     GUILayout.Height(20f)))
             {
                 Rect buttonRect = GUILayoutUtility.GetLastRect();
-                PopupWindow.Show(
+                UnityEditor.PopupWindow.Show(
                     GUIUtility.GUIToScreenRect(buttonRect),
                     new StartScenePopup());
             }
