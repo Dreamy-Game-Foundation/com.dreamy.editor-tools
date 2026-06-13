@@ -1,5 +1,7 @@
+
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -8,3523 +10,2134 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 
-namespace Dreamy.EditorTools {
-    public class DreamyDataDebuggerWindow : EditorWindow {
-        // ─── Layout constants ─────────────────────────────────────
-        private float _sidebarWidth = 250f;
-        private const float SidebarMinW = 180f;
-        private const float SidebarMaxW = 380f;
-        private const float ToolbarHeight = 30f;
-        private const float StatusBarHeight = 22f;
-        private const float SplitterWidth = 4f;
-        private const float CellH = 30f;
-        private const float RowNumW = 52f;
-        private const float ActionsColW = 74f; // ≡ + ✕ + ⧉ + drag visual room
-        private const float PropLabelW = 220f;
-        private const float MaxTableH = 720f;
-        private const float ResizeHandleW = 6f;
-        private const float MinDataColW = 86f;
-        private const float MaxDataColW = 560f;
+namespace Dreamy.EditorTools
+{
+    public sealed class DreamyDataDebuggerWindow : EditorWindow
+    {
+        private const string WindowTitle = "Dreamy Data Debugger";
         private const string SaveDirectoryName = "DreamySaves";
-        private const string DataConfigFolderMarker = "/Resources/DataConfig/";
+        private const string DataConfigMarker = "/Resources/DataConfig/";
         private const string DefaultDataConfigFolder = "Assets/_Project/Resources/DataConfig";
 
-        private enum DataSourceMode {
+        private const float ToolbarHeight = 30f;
+        private const float StatusHeight = 22f;
+        private const float SidebarWidthMin = 190f;
+        private const float SidebarWidthMax = 420f;
+        private const float SplitterWidth = 4f;
+        private const float RowHeight = 28f;
+        private const float RowNumberWidth = 50f;
+        private const float ActionWidth = 106f;
+        private const float CellMinWidth = 96f;
+        private const float CellDefaultWidth = 150f;
+        private const float CellMaxWidth = 420f;
+
+        private enum SourceMode
+        {
             DataConfig,
             Datasave
         }
 
-        private DataSourceMode _sourceMode = DataSourceMode.DataConfig;
-        private string _loadedRawFile = "";
-        private bool _savePayloadWasString;
-
-        // ─── View mode ────────────────────────────────────────────
-        private enum ViewMode {
+        private enum ViewMode
+        {
             Visual,
             Text
         }
 
-        private ViewMode _viewMode = ViewMode.Visual;
-
-        private enum CsvImportMode {
-            Replace,
-            Append,
-            UpdateByKey
+        private sealed class FileEntry
+        {
+            public string FullPath;
+            public string AssetPath;
+            public string RelativePath;
+            public string DisplayName;
+            public bool Dirty;
         }
 
-        private enum SortValueMode {
-            Auto,
-            Number,
-            Text,
-            Boolean,
-            Date
-        }
+        private float sidebarWidth = 270f;
+        private SourceMode sourceMode = SourceMode.DataConfig;
+        private ViewMode viewMode = ViewMode.Visual;
 
-        private class SortRule {
-            public string Key = "";
-            public bool Ascending = true;
-            public SortValueMode Mode = SortValueMode.Auto;
-            public bool EmptyLast = true;
+        private readonly List<FileEntry> files = new List<FileEntry>();
+        private int selectedFileIndex = -1;
+        private string fileSearch = "";
+        private Vector2 sidebarScroll;
 
-            public SortRule Clone() {
-                return new SortRule { Key = Key, Ascending = Ascending, Mode = Mode, EmptyLast = EmptyLast };
-            }
-        }
+        private JToken rootToken;
+        private string editText = "";
+        private string originalRawFile = "";
+        private bool originalPayloadWasString;
+        private bool isDirty;
+        private bool parseError;
+        private string parseErrorMessage = "";
+        private bool autoBackup = true;
 
-        // ─── File list ────────────────────────────────────────────
-        private List<JsonFileEntry> _files = new();
-        private int _selectedIndex = -1;
-        private string _searchFilter = "";
-        private Vector2 _sidebarScroll;
+        private readonly HashSet<string> collapsed = new HashSet<string>();
+        private readonly Dictionary<string, Vector2> tableScroll = new Dictionary<string, Vector2>();
+        private readonly Dictionary<string, string> tableFilter = new Dictionary<string, string>();
+        private readonly Dictionary<string, float> columnWidths = new Dictionary<string, float>();
 
-        // ─── Edit state ───────────────────────────────────────────
-        private string _editText = "";
-        private bool _isDirty;
+        private string selectedTablePath = "";
+        private int selectedRowIndex = -1;
+        private string selectedColumnKey = "";
+        private int selectedCellRow = -1;
 
-        // ─── Visual mode state ────────────────────────────────────
-        private JToken _rootToken;
-        private bool _parseError;
-        private string _parseErrorMsg;
-        private HashSet<string> _collapsed = new();
-        private Dictionary<string, float> _columnWidths = new();
-        private Dictionary<string, Vector2> _tableScrolls = new();
-        private Dictionary<string, string> _tableFilters = new();
-        private Dictionary<string, List<SortRule>> _lastSortRules = new();
-        private Dictionary<string, string> _lastSortLabels = new();
-        private Vector2 _visualScroll;
-        private bool _showTypeBadges = true;
+        private JToken copiedRow;
+        private string copiedRowText = "";
 
-        // ─── Table selection & clipboard ──────────────────────────
-        private string _selTablePath = "";
-        private int _selRowIndex = -1;
-        private string _selCellKey = "";
-        private int _selCellRowIndex = -1;
-        private JObject _clipboardRow;
-        private string _clipboardJson = "";
+        private string draggingTablePath = "";
+        private int draggingRowIndex = -1;
+        private int dragTargetVisualIndex = -1;
+        private bool isDraggingRow;
+        private Vector2 dragStartMouse;
+        private int pendingMoveFrom = -1;
+        private int pendingMoveTarget = -1;
+        private string pendingMoveTable = "";
 
-        // ─── Row drag & drop ──────────────────────────────────────
-        private string _dragTablePath = "";
-        private int _dragRowIndex = -1;
-        private int _dragDropVisualIndex = -1;
-        private bool _isDraggingRow;
-        private Vector2 _dragMouseStart;
-        private string _dragLabel = "";
-        // IMGUI-safe deferred row move. Do not mutate JArray inside BeginScrollView.
-        private string _pendingMoveTablePath = "";
-        private int _pendingMoveFromIndex = -1;
-        private int _pendingMoveTargetIndex = -1;
-        private const float DragHandleW = 18f;
-        private const float DragStartDistance = 4f;
+        private Vector2 visualScroll;
+        private Vector2 textScroll;
+        private string status = "";
+        private MessageType statusType = MessageType.None;
 
-        // ─── Column resize drag ───────────────────────────────────
-        private string _resizingColKey = "";
+        private GUIStyle textStyle;
+        private GUIStyle cellStyle;
+        private GUIStyle headerStyle;
+        private GUIStyle rowNumberStyle;
+        private GUIStyle smallButtonStyle;
 
-        // ─── Text mode ────────────────────────────────────────────
-        private Vector2 _textScroll;
-        private GUIStyle _monoStyle;
-
-        // ─── Status bar ───────────────────────────────────────────
-        private string _statusMsg = "";
-        private MessageType _statusType = MessageType.None;
-
-        // ─── Styles ───────────────────────────────────────────────
-        private GUIStyle _sidebarItem;
-        private GUIStyle _sidebarSelected;
-        private GUIStyle _cellField;
-        private GUIStyle _headerCell;
-        private GUIStyle _rowNumStyle;
-        private GUIStyle _actionBtn;
-        private bool _stylesInit;
-
-        // ─── Colors ───────────────────────────────────────────────
-        private static readonly Color ClrSelected = new(0.22f, 0.44f, 0.80f, 0.90f);
-        private static readonly Color ClrSep = new(0.11f, 0.11f, 0.11f, 1f);
-        private static readonly Color ClrHeaderBg = new(0.18f, 0.20f, 0.30f, 1f);
-        private static readonly Color ClrResizeBar = new(0.45f, 0.55f, 0.80f, 0.80f);
-        private static readonly Color ClrRowEven = new(0.155f, 0.155f, 0.20f, 1f);
-        private static readonly Color ClrRowOdd = new(0.175f, 0.18f, 0.225f, 1f);
-        private static readonly Color ClrSectionBg = new(0.19f, 0.19f, 0.24f, 1f);
-        private static readonly Color ClrPropRow = new(0.15f, 0.15f, 0.19f, 1f);
-        private static readonly Color ClrChip = new(0.22f, 0.26f, 0.34f, 1f);
-        private static readonly Color ClrNested = new(0.25f, 0.30f, 0.42f, 1f);
-        private static readonly Color ClrDirty = new(1f, 0.85f, 0.3f, 1f);
-        private static readonly Color ClrGood = new(0.45f, 0.95f, 0.5f, 1f);
-        private static readonly Color ClrErr = new(1f, 0.38f, 0.38f, 1f);
-
-        // ─────────────────────────────────────────────────────────
         [MenuItem("Tools/Dreamy/Data Debugger")]
-        public static void ShowWindow() {
-            var w = GetWindow<DreamyDataDebuggerWindow>("Dreamy Data Debugger");
-            w.minSize = new Vector2(1040, 620);
-            w.Show();
+        public static void Open()
+        {
+            DreamyDataDebuggerWindow window = GetWindow<DreamyDataDebuggerWindow>();
+            window.titleContent = new GUIContent(WindowTitle);
+            window.minSize = new Vector2(980f, 560f);
+            window.Show();
         }
 
-        private void OnEnable() => RefreshFileList();
-
-        // ─── Style init ───────────────────────────────────────────
-        private void InitStyles() {
-            if (_stylesInit) return;
-            _stylesInit = true;
-
-            _sidebarItem = new GUIStyle(EditorStyles.label)
-            {
-                padding = new RectOffset(10, 4, 4, 4), fontSize = 12, richText = true,
-            };
-            _sidebarSelected = new GUIStyle(_sidebarItem);
-            _sidebarSelected.normal.textColor = Color.white;
-
-            var mono = GetMonoFont();
-            _monoStyle = new GUIStyle(EditorStyles.textArea) { font = mono, fontSize = 13, wordWrap = false };
-
-            _cellField = new GUIStyle(EditorStyles.textField)
-            {
-                font = mono, fontSize = 12,
-                padding = new RectOffset(4, 4, 3, 3),
-                alignment = TextAnchor.MiddleLeft,
-            };
-
-            _headerCell = new GUIStyle(EditorStyles.label)
-            {
-                font = mono, fontSize = 12, fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleLeft,
-                padding = new RectOffset(6, 4, 0, 0),
-            };
-            _headerCell.normal.textColor = new Color(0.82f, 0.88f, 1f);
-
-            _rowNumStyle = new GUIStyle(EditorStyles.centeredGreyMiniLabel)
-            {
-                fontSize = 10, alignment = TextAnchor.MiddleCenter,
-            };
-
-            _actionBtn = new GUIStyle(EditorStyles.miniButton)
-            {
-                padding = new RectOffset(2, 2, 2, 2), fontSize = 11,
-            };
+        private void OnEnable()
+        {
+            RefreshFiles(false);
         }
 
-        private static Font GetMonoFont() {
-            var installed = new HashSet<string>(Font.GetOSInstalledFontNames(), StringComparer.OrdinalIgnoreCase);
-            foreach (var n in new[] { "Consolas", "Courier New", "Courier", "Lucida Console", "Monaco", "Menlo" })
-                if (installed.Contains(n))
-                    return Font.CreateDynamicFontFromOSFont(n, 13);
-            return EditorStyles.textArea.font;
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  OnGUI
-        // ═══════════════════════════════════════════════════════════
-        private void OnGUI() {
-            HandleKeyboard();
-            HandleColumnResizeDrag();
+        private void OnGUI()
+        {
             InitStyles();
+            HandleKeyboard();
             DrawToolbar();
 
             float bodyY = ToolbarHeight;
-            float bodyH = position.height - ToolbarHeight - StatusBarHeight;
+            float bodyH = position.height - ToolbarHeight - StatusHeight;
 
-            DrawSidebar(new Rect(0, bodyY, _sidebarWidth, bodyH));
-            DrawSidebarSplitter(new Rect(_sidebarWidth, bodyY, SplitterWidth, bodyH));
-            DrawContent(new Rect(_sidebarWidth + SplitterWidth, bodyY,
-                position.width - _sidebarWidth - SplitterWidth, bodyH));
-            DrawStatusBar(new Rect(0, position.height - StatusBarHeight, position.width, StatusBarHeight));
+            DrawSidebar(new Rect(0, bodyY, sidebarWidth, bodyH));
+            DrawSplitter(new Rect(sidebarWidth, bodyY, SplitterWidth, bodyH));
+            DrawContent(new Rect(sidebarWidth + SplitterWidth, bodyY, position.width - sidebarWidth - SplitterWidth, bodyH));
+            DrawStatus(new Rect(0, position.height - StatusHeight, position.width, StatusHeight));
         }
 
-        // ─── Keyboard shortcuts ────────────────────────────────────
-        private void HandleKeyboard() {
-            var e = Event.current;
-            if (e.type != EventType.KeyDown) return;
-            bool ctrl = e.control || e.command;
+        private void InitStyles()
+        {
+            if (textStyle != null) return;
 
-            if (ctrl && e.keyCode == KeyCode.S) {
-                SaveCurrent();
-                e.Use();
-                return;
-            }
+            Font mono = GetMonoFont();
 
-            if (!ctrl && e.keyCode == KeyCode.Escape) {
-                ClearSelection();
-                e.Use();
-                return;
-            }
+            textStyle = new GUIStyle(EditorStyles.textArea)
+            {
+                font = mono,
+                fontSize = 13,
+                wordWrap = false
+            };
 
-            if (_selRowIndex < 0 || string.IsNullOrEmpty(_selTablePath)) return;
+            cellStyle = new GUIStyle(EditorStyles.textField)
+            {
+                font = mono,
+                fontSize = 12,
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(4, 4, 2, 2)
+            };
 
-            if (ctrl && e.keyCode == KeyCode.C) {
-                CopySelectedRow();
-                e.Use();
-            }
-            else if (ctrl && e.keyCode == KeyCode.V) {
-                PasteRowBelow();
-                e.Use();
-            }
-            else if (ctrl && e.keyCode == KeyCode.D) {
-                DuplicateSelectedRow();
-                e.Use();
-            }
-            else if (e.keyCode == KeyCode.Delete) {
-                DeleteSelectedRow();
-                e.Use();
-            }
-            else if (ctrl && e.keyCode == KeyCode.UpArrow) {
-                MoveSelectedRow(-1);
-                e.Use();
-            }
-            else if (ctrl && e.keyCode == KeyCode.DownArrow) {
-                MoveSelectedRow(1);
-                e.Use();
-            }
-            else if (!ctrl && e.keyCode == KeyCode.UpArrow) {
-                ShiftSelection(-1);
-                e.Use();
-            }
-            else if (!ctrl && e.keyCode == KeyCode.DownArrow) {
-                ShiftSelection(1);
-                e.Use();
-            }
+            headerStyle = new GUIStyle(EditorStyles.label)
+            {
+                font = mono,
+                fontSize = 12,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(5, 4, 0, 0)
+            };
+
+            rowNumberStyle = new GUIStyle(EditorStyles.centeredGreyMiniLabel)
+            {
+                alignment = TextAnchor.MiddleCenter
+            };
+
+            smallButtonStyle = new GUIStyle(EditorStyles.miniButton)
+            {
+                fontSize = 11,
+                padding = new RectOffset(2, 2, 2, 2)
+            };
         }
 
-        // ─── Column resize drag (handled before any groups) ────────
-        private void HandleColumnResizeDrag() {
-            if (string.IsNullOrEmpty(_resizingColKey)) return;
-            var e = Event.current;
-            if (e.type == EventType.MouseDrag) {
-                if (_columnWidths.ContainsKey(_resizingColKey))
-                    _columnWidths[_resizingColKey] = Mathf.Max(40f, _columnWidths[_resizingColKey] + e.delta.x);
-                Repaint();
-                e.Use();
+        private static Font GetMonoFont()
+        {
+            HashSet<string> installed = new HashSet<string>(Font.GetOSInstalledFontNames(), StringComparer.OrdinalIgnoreCase);
+            string[] names = { "Consolas", "Courier New", "Courier", "Lucida Console", "Monaco", "Menlo" };
+            foreach (string name in names)
+            {
+                if (installed.Contains(name))
+                    return Font.CreateDynamicFontFromOSFont(name, 13);
             }
-            else if (e.type == EventType.MouseUp) {
-                _resizingColKey = "";
-                Repaint();
-            }
+
+            return EditorStyles.textArea.font;
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Toolbar
-        // ═══════════════════════════════════════════════════════════
-        private void DrawToolbar() {
-            EditorGUI.DrawRect(new Rect(0, 0, position.width, ToolbarHeight), new Color(0.2f, 0.2f, 0.2f));
+        private void DrawToolbar()
+        {
             GUILayout.BeginArea(new Rect(0, 0, position.width, ToolbarHeight));
             GUILayout.BeginHorizontal(EditorStyles.toolbar);
 
-            DataSourceMode nextSource = (DataSourceMode)GUILayout.Toolbar(
-                (int)_sourceMode,
-                new[] { "DataConfig", "Datasave" },
+            SourceMode nextMode = (SourceMode)GUILayout.Toolbar(
+                (int)sourceMode,
+                new[] { "Data Config", "Datasave" },
                 EditorStyles.toolbarButton,
-                GUILayout.Width(190));
+                GUILayout.Width(220f));
 
-            if (nextSource != _sourceMode) {
-                if (ConfirmSwitchSource()) {
-                    _sourceMode = nextSource;
-                    ClearCurrentFileState();
-                    RefreshFileList();
-                }
+            if (nextMode != sourceMode && ConfirmLeaveDirtyFile())
+            {
+                sourceMode = nextMode;
+                ClearCurrentFile();
+                RefreshFiles(false);
             }
 
-            if (GUILayout.Button("↺", EditorStyles.toolbarButton, GUILayout.Width(28))) RefreshFileList();
+            if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(72f)))
+            {
+                if (ConfirmLeaveDirtyFile())
+                    RefreshFiles(true);
+            }
 
-            bool hasSel = _selectedIndex >= 0 && _selectedIndex < _files.Count;
-
-            using (new EditorGUI.DisabledScope(!_isDirty || !hasSel))
-                if (GUILayout.Button(_sourceMode == DataSourceMode.Datasave ? "💾 Save Payload" : "💾 Save", EditorStyles.toolbarButton, GUILayout.Width(_sourceMode == DataSourceMode.Datasave ? 104 : 62)))
+            using (new EditorGUI.DisabledScope(!HasSelectedFile()))
+            {
+                if (GUILayout.Button("Save", EditorStyles.toolbarButton, GUILayout.Width(56f)))
                     SaveCurrent();
 
-            using (new EditorGUI.DisabledScope(!hasSel)) {
-                if (GUILayout.Button("⟲ Reload", EditorStyles.toolbarButton, GUILayout.Width(68))) ReloadCurrent();
-                if (_viewMode == ViewMode.Text &&
-                    GUILayout.Button("{ } Format", EditorStyles.toolbarButton, GUILayout.Width(76))) FormatJson();
-                if (GUILayout.Button("📋 Name", EditorStyles.toolbarButton, GUILayout.Width(72))) CopyCurrentConfigName();
-                if (GUILayout.Button("📋 Path", EditorStyles.toolbarButton, GUILayout.Width(68))) CopyCurrentConfigPath();
-                if (GUILayout.Button("Folder", EditorStyles.toolbarButton, GUILayout.Width(58))) RevealCurrentFile();
+                if (GUILayout.Button("Reload", EditorStyles.toolbarButton, GUILayout.Width(64f)))
+                    ReloadCurrent();
+
+                if (GUILayout.Button(viewMode == ViewMode.Visual ? "Text" : "Visual", EditorStyles.toolbarButton, GUILayout.Width(62f)))
+                    SwitchView();
+
+                if (GUILayout.Button("Format", EditorStyles.toolbarButton, GUILayout.Width(64f)))
+                    FormatJson();
+
+                if (GUILayout.Button("Reveal", EditorStyles.toolbarButton, GUILayout.Width(62f)))
+                    RevealCurrent();
             }
 
-            GUILayout.Space(6);
+            if (sourceMode == SourceMode.DataConfig)
+            {
+                if (GUILayout.Button("New Config", EditorStyles.toolbarButton, GUILayout.Width(90f)))
+                    CreateNewConfig();
 
-            if (_sourceMode == DataSourceMode.DataConfig) {
-                if (GUILayout.Button("+ New Config", EditorStyles.toolbarButton, GUILayout.Width(92)))
-                    CreateNewDataConfigFile();
-                if (GUILayout.Button("📋 Remote JSON", EditorStyles.toolbarButton, GUILayout.Width(108)))
-                    CopyRemoteConfigJsonTemplate();
+                if (GUILayout.Button("Open Folder", EditorStyles.toolbarButton, GUILayout.Width(92f)))
+                    OpenDataConfigFolder();
             }
-            else {
-                if (GUILayout.Button("🗑 Delete All Saves", EditorStyles.toolbarButton, GUILayout.Width(122)))
-                    DeleteAllSaveFiles();
+            else
+            {
+                if (GUILayout.Button("Open Saves", EditorStyles.toolbarButton, GUILayout.Width(86f)))
+                    OpenSaveFolder();
+
+                if (GUILayout.Button("Delete Saves", EditorStyles.toolbarButton, GUILayout.Width(94f)))
+                    DeleteAllSaves();
             }
-
-            GUILayout.Space(10);
-
-            using (new EditorGUI.DisabledScope(!hasSel)) {
-                string lbl = _viewMode == ViewMode.Visual ? "◧ Text" : "⊞ Visual";
-                ViewMode next = _viewMode == ViewMode.Visual ? ViewMode.Text : ViewMode.Visual;
-                if (GUILayout.Button(lbl, EditorStyles.toolbarButton, GUILayout.Width(72))) SwitchViewMode(next);
-            }
-
-            GUILayout.Space(8);
-            _showTypeBadges = GUILayout.Toggle(_showTypeBadges, "Types", EditorStyles.toolbarButton, GUILayout.Width(54));
 
             GUILayout.FlexibleSpace();
+            autoBackup = GUILayout.Toggle(autoBackup, "Auto Backup", EditorStyles.toolbarButton, GUILayout.Width(104f));
 
-            var hintS = new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.4f, 0.4f, 0.4f) } };
-            GUILayout.Label(_sourceMode == DataSourceMode.Datasave
-                ? "Datasave: only Payload is shown/edited | Ctrl+S  C/V/D  Del  Ctrl+↑↓  drag ≡"
-                : "DataConfig: */Resources/DataConfig/*.json | Ctrl+S  C/V/D  Del  Ctrl+↑↓  drag ≡",
-                hintS);
+            if (isDirty)
+                GUILayout.Label("Unsaved", EditorStyles.toolbarButton, GUILayout.Width(70f));
 
-            if (_isDirty && hasSel) {
-                var prev = GUI.color;
-                GUI.color = ClrDirty;
-                GUILayout.Label("● unsaved", EditorStyles.toolbarButton);
-                GUI.color = prev;
-            }
-
-            GUILayout.Space(4);
             GUILayout.EndHorizontal();
             GUILayout.EndArea();
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Sidebar
-        // ═══════════════════════════════════════════════════════════
-        private void DrawSidebar(Rect rect) {
-            EditorGUI.DrawRect(rect, new Color(0.17f, 0.17f, 0.17f));
-            _searchFilter = EditorGUI.TextField(
-                new Rect(rect.x + 4, rect.y + 4, rect.width - 8, 20),
-                _searchFilter, EditorStyles.toolbarSearchField);
+        private void DrawSidebar(Rect rect)
+        {
+            EditorGUI.DrawRect(rect, new Color(0.17f, 0.17f, 0.18f));
 
-            var listR = new Rect(rect.x, rect.y + 28, rect.width, rect.height - 28);
-            GUILayout.BeginArea(listR);
-            _sidebarScroll = GUILayout.BeginScrollView(_sidebarScroll, false, false);
+            Rect searchRect = new Rect(rect.x + 5, rect.y + 5, rect.width - 10, 20);
+            fileSearch = EditorGUI.TextField(searchRect, fileSearch, EditorStyles.toolbarSearchField);
 
-            for (int i = 0; i < _files.Count; i++) {
-                var f = _files[i];
-                if (!string.IsNullOrEmpty(_searchFilter) &&
-                    !f.DisplayName.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)) continue;
+            Rect listRect = new Rect(rect.x, rect.y + 30, rect.width, rect.height - 30);
+            GUILayout.BeginArea(listRect);
+            sidebarScroll = GUILayout.BeginScrollView(sidebarScroll);
 
-                bool sel = i == _selectedIndex;
-                var ir = GUILayoutUtility.GetRect(listR.width, 28, GUILayout.ExpandWidth(true));
-                if (sel) EditorGUI.DrawRect(ir, ClrSelected);
-                else if (ir.Contains(Event.current.mousePosition)) {
-                    EditorGUI.DrawRect(ir, new Color(0.3f, 0.3f, 0.3f, 0.5f));
-                    Repaint();
-                }
+            for (int i = 0; i < files.Count; i++)
+            {
+                FileEntry file = files[i];
+                if (!MatchesFileSearch(file)) continue;
 
-                EditorGUI.LabelField(ir, (f.IsDirty ? "● " : "    ") + f.DisplayName,
-                    sel ? _sidebarSelected : _sidebarItem);
+                Rect itemRect = GUILayoutUtility.GetRect(listRect.width, 26f, GUILayout.ExpandWidth(true));
+                bool selected = i == selectedFileIndex;
 
-                if (Event.current.type == EventType.ContextClick && ir.Contains(Event.current.mousePosition)) {
-                    ShowFileContextMenu(i);
-                    Event.current.Use();
-                }
-                else if (Event.current.type == EventType.MouseDown && ir.Contains(Event.current.mousePosition)) {
-                    if (Event.current.button == 0) {
+                if (selected)
+                    EditorGUI.DrawRect(itemRect, new Color(0.23f, 0.43f, 0.76f, 0.95f));
+                else if (itemRect.Contains(Event.current.mousePosition))
+                    EditorGUI.DrawRect(itemRect, new Color(0.30f, 0.30f, 0.32f, 0.55f));
+
+                string label = (file.Dirty ? "* " : "  ") + file.DisplayName;
+                GUI.Label(new Rect(itemRect.x + 4, itemRect.y + 4, itemRect.width - 8, 18), label, selected ? EditorStyles.whiteLabel : EditorStyles.label);
+
+                if (Event.current.type == EventType.MouseDown && itemRect.Contains(Event.current.mousePosition))
+                {
+                    if (Event.current.button == 0)
                         SelectFile(i);
-                        if (Event.current.clickCount == 2) RevealCurrentFile();
-                    }
+                    else if (Event.current.button == 1)
+                        ShowFileContextMenu(i);
+
                     Event.current.Use();
                 }
+            }
+
+            if (files.Count == 0)
+            {
+                GUILayout.Space(12);
+                GUILayout.Label(sourceMode == SourceMode.DataConfig ? "No config JSON found." : "No save file found.", EditorStyles.centeredGreyMiniLabel);
             }
 
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
-
-        // ─── Resizable sidebar splitter ───────────────────────────
-        private void DrawSidebarSplitter(Rect rect) {
-            EditorGUI.DrawRect(rect, ClrSep);
+        private void DrawSplitter(Rect rect)
+        {
+            EditorGUI.DrawRect(rect, new Color(0.08f, 0.08f, 0.08f));
             EditorGUIUtility.AddCursorRect(rect, MouseCursor.ResizeHorizontal);
 
-            var e = Event.current;
-            if (e.type == EventType.MouseDrag && rect.Contains(e.mousePosition)) {
-                _sidebarWidth = Mathf.Clamp(_sidebarWidth + e.delta.x, SidebarMinW, SidebarMaxW);
+            Event evt = Event.current;
+            if (evt.type == EventType.MouseDrag && rect.Contains(evt.mousePosition))
+            {
+                sidebarWidth = Mathf.Clamp(sidebarWidth + evt.delta.x, SidebarWidthMin, SidebarWidthMax);
+                evt.Use();
                 Repaint();
-                e.Use();
             }
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Content area
-        // ═══════════════════════════════════════════════════════════
-        private void DrawContent(Rect rect) {
-            if (_selectedIndex < 0 || _selectedIndex >= _files.Count) {
-                EditorGUI.DrawRect(rect, new Color(0.14f, 0.14f, 0.14f));
-                GUI.Label(rect, "← Select a config file",
+        private void DrawContent(Rect rect)
+        {
+            EditorGUI.DrawRect(rect, new Color(0.14f, 0.14f, 0.15f));
+
+            if (!HasSelectedFile())
+            {
+                GUI.Label(rect, sourceMode == SourceMode.DataConfig
+                        ? "Select a JSON config from Resources/DataConfig."
+                        : "Select a save file. Only Payload will be displayed.",
                     new GUIStyle(EditorStyles.centeredGreyMiniLabel) { fontSize = 14 });
                 return;
             }
 
-            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 22), new Color(0.15f, 0.15f, 0.2f));
-            GUI.Label(new Rect(rect.x, rect.y, rect.width, 22),
-                "📄  " + _files[_selectedIndex].RelativePath,
-                new GUIStyle(EditorStyles.miniLabel)
-                {
-                    padding = new RectOffset(8, 8, 4, 4),
-                    normal = { textColor = new Color(0.65f, 0.7f, 0.8f) }
-                });
-            EditorGUI.DrawRect(new Rect(rect.x, rect.y + 22, rect.width, 1), ClrSep);
+            Rect titleRect = new Rect(rect.x, rect.y, rect.width, 24f);
+            EditorGUI.DrawRect(titleRect, new Color(0.15f, 0.15f, 0.19f));
+            GUI.Label(new Rect(titleRect.x + 8, titleRect.y + 4, titleRect.width - 16, 18), CurrentFile.RelativePath, EditorStyles.miniLabel);
 
-            var bodyR = new Rect(rect.x, rect.y + 23, rect.width, rect.height - 23);
-            if (_viewMode == ViewMode.Visual) DrawVisualMode(bodyR);
-            else DrawTextMode(bodyR);
+            Rect body = new Rect(rect.x, rect.y + 25, rect.width, rect.height - 25);
+
+            if (viewMode == ViewMode.Text)
+                DrawTextView(body);
+            else
+                DrawVisualView(body);
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  VISUAL MODE
-        // ═══════════════════════════════════════════════════════════
-        private void DrawVisualMode(Rect rect) {
-            if (_parseError) {
-                EditorGUI.DrawRect(rect, new Color(0.18f, 0.1f, 0.1f));
-                EditorGUI.HelpBox(new Rect(rect.x + 12, rect.y + 12, rect.width - 24, 56),
-                    "JSON parse error: " + _parseErrorMsg, MessageType.Error);
-                if (GUI.Button(new Rect(rect.x + 12, rect.y + 76, 180, 26), "Switch to Text Mode to fix"))
-                    SwitchViewMode(ViewMode.Text);
-                return;
-            }
-
-            if (_rootToken == null) return;
-
+        private void DrawTextView(Rect rect)
+        {
             GUILayout.BeginArea(rect);
-            _visualScroll = GUILayout.BeginScrollView(_visualScroll, false, true);
+            textScroll = GUILayout.BeginScrollView(textScroll);
 
-            if (_rootToken is JObject rootObj) DrawJObjectProperties(rootObj, "root");
-            else if (_rootToken is JArray rootArr) {
-                if (rootArr.Count > 0 && rootArr[0] is JObject) DrawObjectTable(rootArr, "root");
-                else DrawPrimitiveArraySection(rootArr, "root", "root");
-            }
+            EditorGUI.BeginChangeCheck();
+            editText = GUILayout.TextArea(editText, textStyle, GUILayout.ExpandHeight(true), GUILayout.ExpandWidth(true));
+            if (EditorGUI.EndChangeCheck())
+                MarkDirty();
 
-            GUILayout.Space(20);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
-        // ── JObject property grid ─────────────────────────────────
-        private void DrawJObjectProperties(JObject obj, string path) {
-            foreach (var prop in obj.Properties().ToList()) {
-                string pp = path + "." + prop.Name;
-                var val = prop.Value;
-                if (val is JArray arr && arr.Count > 0 && arr[0] is JObject) DrawArraySection(arr, pp, prop.Name);
-                else if (val is JArray primArr) DrawPrimitiveArraySection(primArr, pp, prop.Name);
-                else if (val is JObject nested) DrawNestedObjectSection(nested, pp, prop.Name);
-                else DrawPrimitiveRow(prop, pp);
-            }
-        }
+        private void DrawVisualView(Rect rect)
+        {
+            GUILayout.BeginArea(rect);
+            visualScroll = GUILayout.BeginScrollView(visualScroll);
 
-        // ── Primitive key-value row ────────────────────────────────
-        private void DrawPrimitiveRow(JProperty prop, string path) {
-            var rowR = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none,
-                GUILayout.Height(CellH), GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(rowR, ClrPropRow);
-            EditorGUI.DrawRect(new Rect(rowR.x, rowR.yMax - 1, rowR.width, 1), ClrSep);
-            float x = rowR.x + 8, y = rowR.y + 1, h = CellH - 2;
-            GUI.Label(new Rect(x, y, PropLabelW, h), prop.Name, EditorStyles.label);
-            DrawTokenValueField(prop.Value,
-                new Rect(x + PropLabelW + 4, y, rowR.width - PropLabelW - 20, h),
-                tok => {
-                    prop.Value = tok;
-                    OnTokenChanged();
-                });
-        }
+            if (parseError)
+            {
+                EditorGUILayout.HelpBox("JSON parse error: " + parseErrorMessage, MessageType.Error);
+                if (GUILayout.Button("Switch To Text View", GUILayout.Width(160f)))
+                    viewMode = ViewMode.Text;
 
-        // ── Collapsible array-of-objects section ──────────────────
-        private void DrawArraySection(JArray arr, string path, string label) {
-            bool collapsed = _collapsed.Contains(path);
-            var hdrR = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(hdrR, ClrSectionBg);
-            EditorGUI.DrawRect(new Rect(hdrR.x, hdrR.yMax, hdrR.width, 1), ClrSep);
-
-            float bx = hdrR.x + 4, by = hdrR.y + 5;
-
-            if (GUI.Button(new Rect(bx, by, 18, 18), collapsed ? "▶" : "▼", EditorStyles.miniButton)) {
-                if (collapsed) _collapsed.Remove(path);
-                else _collapsed.Add(path);
-            }
-
-            bx += 22;
-
-            var lblS = new GUIStyle(EditorStyles.boldLabel) { normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
-            GUI.Label(new Rect(bx, by, 280, 18), $"{label}   [{arr.Count} rows]", lblS);
-
-            // Right-side buttons (right-aligned)
-            float rx = hdrR.xMax - 4;
-
-            // Auto-fit columns
-            rx -= 58;
-            if (GUI.Button(new Rect(rx, by, 54, 18), "↔ Fit", EditorStyles.miniButton)) {
-                var toRemove = _columnWidths.Keys.Where(k => k.StartsWith(path + ".")).ToList();
-                foreach (var k in toRemove) _columnWidths.Remove(k);
-                _collapsed.Remove(path);
-                Repaint();
-            }
-
-            rx -= 4;
-
-            // Add column / field
-            rx -= 64;
-            if (GUI.Button(new Rect(rx, by, 60, 18), "+ Field", EditorStyles.miniButton)) {
-                StringInputWindow.Open("Add Field", "Field name:", "", name => AddColumnToRows(arr, name));
-            }
-
-            rx -= 4;
-
-            // Paste row
-            rx -= 62;
-            using (new EditorGUI.DisabledScope(_clipboardRow == null)) {
-                if (GUI.Button(new Rect(rx, by, 58, 18), "⧉ Paste", EditorStyles.miniButton)) {
-                    arr.Add((JObject)_clipboardRow.DeepClone());
-                    _selTablePath = path;
-                    _selRowIndex = arr.Count - 1;
-                    _collapsed.Remove(path);
-                    OnTokenChanged();
-                }
-            }
-
-            rx -= 4;
-
-            // Add row
-            rx -= 54;
-            if (GUI.Button(new Rect(rx, by, 50, 18), "+ Add", EditorStyles.miniButton)) {
-                AddCloneRow(arr);
-                _selTablePath = path;
-                _selRowIndex = arr.Count - 1;
-                _collapsed.Remove(path);
-                OnTokenChanged();
-            }
-
-            if (!collapsed) {
-                DrawObjectTable(arr, path);
-                GUILayout.Space(4);
-            }
-        }
-
-
-        private List<int> BuildVisibleRowIndices(JArray arr, string filter) {
-            var result = new List<int>();
-            bool useFilter = !string.IsNullOrWhiteSpace(filter);
-            string needle = useFilter ? filter.Trim() : "";
-
-            for (int i = 0; i < arr.Count; i++) {
-                if (!useFilter) {
-                    result.Add(i);
-                    continue;
-                }
-
-                string flat = arr[i].ToString(Formatting.None);
-                if (flat.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
-                    result.Add(i);
-            }
-
-            return result;
-        }
-
-        private void DrawTableMiniToolbar(string path, JArray arr, List<int> visibleRowIndices, List<string> keys, float contentW, ref string filter) {
-            var r = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(r, new Color(0.13f, 0.14f, 0.18f));
-            EditorGUI.DrawRect(new Rect(r.x, r.yMax - 1, r.width, 1), ClrSep);
-
-            float x = r.x + 8;
-            GUI.Label(new Rect(x, r.y + 5, 128, 18), $"Rows: {visibleRowIndices.Count}/{arr.Count}", EditorStyles.miniLabel);
-            x += 122;
-
-            GUI.Label(new Rect(x, r.y + 5, 36, 18), "Find", EditorStyles.miniLabel);
-            x += 34;
-
-            EditorGUI.BeginChangeCheck();
-            string next = EditorGUI.TextField(new Rect(x, r.y + 4, 210, 19), filter ?? "", EditorStyles.toolbarSearchField);
-            if (EditorGUI.EndChangeCheck()) filter = next;
-            x += 216;
-
-            if (!string.IsNullOrEmpty(filter) && GUI.Button(new Rect(x, r.y + 4, 48, 19), "Clear", EditorStyles.miniButton)) {
-                filter = "";
-                GUI.FocusControl(null);
-            }
-            x += 54;
-
-            using (new EditorGUI.DisabledScope(_selTablePath != path || _selRowIndex < 0)) {
-                if (GUI.Button(new Rect(x, r.y + 4, 70, 19), "Move To", EditorStyles.miniButton)) {
-                    int rowNow = Mathf.Max(1, _selRowIndex + 1);
-                    StringInputWindow.Open("Move Row", "Move selected row to row number (1-based):", rowNow.ToString(),
-                        s => MoveSelectedRowToSpecificOrder(s));
-                }
-                x += 74;
-
-                if (GUI.Button(new Rect(x, r.y + 4, 48, 19), "Top", EditorStyles.miniButton)) {
-                    MoveSelectedRowToIndex(0);
-                }
-                x += 52;
-
-                if (GUI.Button(new Rect(x, r.y + 4, 58, 19), "Bottom", EditorStyles.miniButton)) {
-                    MoveSelectedRowToIndex(arr.Count);
-                }
-                x += 62;
-            }
-
-            if (GUI.Button(new Rect(x, r.y + 4, 80, 19), "Copy Keys", EditorStyles.miniButton)) {
-                EditorGUIUtility.systemCopyBuffer = string.Join(",", keys);
-                SetStatus("📋 Column keys copied.", MessageType.Info);
-            }
-            x += 84;
-
-            if (GUI.Button(new Rect(x, r.y + 4, 48, 19), "CSV", EditorStyles.miniButton)) {
-                ShowCsvMenu(path, arr, visibleRowIndices, keys);
-            }
-            x += 52;
-
-            if (GUI.Button(new Rect(x, r.y + 4, 54, 19), "Sort", EditorStyles.miniButton)) {
-                ShowSortMenu(path, arr, visibleRowIndices, keys);
-            }
-            x += 58;
-
-            if (_lastSortLabels.TryGetValue(path, out string sortLabel) && !string.IsNullOrEmpty(sortLabel)) {
-                var sortStyle = new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.65f, 0.78f, 1f) } };
-                GUI.Label(new Rect(x, r.y + 5, Mathf.Max(60, r.xMax - x - 236), 18), "↕ " + TruncateMiddle(sortLabel, 56), sortStyle);
-            }
-
-            var wS = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleRight };
-            GUI.Label(new Rect(r.xMax - 230, r.y + 5, 220, 18), $"Table width: {Mathf.RoundToInt(contentW)} px", wS);
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  EXCEL-LIKE TABLE
-        // ═══════════════════════════════════════════════════════════
-        private void DrawObjectTable(JArray arr, string path) {
-            if (arr.Count == 0) {
-                GUILayout.Label("  (empty)", EditorStyles.centeredGreyMiniLabel, GUILayout.Height(24));
+                GUILayout.EndScrollView();
+                GUILayout.EndArea();
                 return;
             }
 
-            // Collect column keys (union across all rows)
-            var keys = new List<string>();
-            var keySet = new HashSet<string>();
-            foreach (JToken tok in arr) {
-                if (tok is not JObject r) continue;
-                foreach (var k in r.Properties().Select(p => p.Name))
-                    if (keySet.Add(k))
-                        keys.Add(k);
+            if (rootToken == null)
+            {
+                GUILayout.EndScrollView();
+                GUILayout.EndArea();
+                return;
             }
 
-            float[] colW = ComputeColumnWidths(path, keys, arr);
-            float contentW = RowNumW + ActionsColW + colW.Sum() + keys.Count * 2 + 4;
+            if (rootToken is JObject obj)
+            {
+                DrawObject(obj, "root");
+            }
+            else if (rootToken is JArray arr)
+            {
+                DrawArraySection(arr, "root", "root", true);
+            }
+            else
+            {
+                DrawRootScalar();
+            }
 
-            string filter = _tableFilters.TryGetValue(path, out var f) ? f : "";
-            var visibleRows = BuildVisibleRowIndices(arr, filter);
-            DrawTableMiniToolbar(path, arr, visibleRows, keys, contentW, ref filter);
-            _tableFilters[path] = filter;
+            GUILayout.Space(24);
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
 
-            if (!_tableScrolls.ContainsKey(path)) _tableScrolls[path] = Vector2.zero;
-            var sv = _tableScrolls[path];
+        private void DrawRootScalar()
+        {
+            Rect r = GUILayoutUtility.GetRect(0, RowHeight, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(0.18f, 0.18f, 0.22f));
+            GUI.Label(new Rect(r.x + 8, r.y + 4, 80, 18), "value");
+            DrawValueField(rootToken, new Rect(r.x + 92, r.y + 2, r.width - 100, RowHeight - 4), delegate(JToken token)
+            {
+                rootToken = token;
+                OnTokenChanged();
+            });
+        }
 
-            // ── Frozen header (allocated in outer layout, drawn via GUI.BeginGroup) ──
-            var hdrR = GUILayoutUtility.GetRect(0, CellH + 2, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(hdrR, ClrHeaderBg);
-            EditorGUI.DrawRect(new Rect(hdrR.x, hdrR.yMax, hdrR.width, 1), ClrSep);
+        private void DrawObject(JObject obj, string path)
+        {
+            foreach (JProperty prop in obj.Properties().ToList())
+            {
+                string childPath = path + "." + prop.Name;
 
-            // Draw header content offset by current horizontal scroll
-            GUI.BeginGroup(hdrR);
-            DrawFrozenHeader(sv.x, hdrR.width, keys, colW, path, arr);
+                if (prop.Value is JArray arr)
+                    DrawArraySection(arr, childPath, prop.Name, false);
+                else if (prop.Value is JObject childObj)
+                    DrawObjectSection(childObj, childPath, prop.Name);
+                else
+                    DrawPropertyRow(prop);
+            }
+        }
+
+        private void DrawObjectSection(JObject obj, string path, string label)
+        {
+            bool isCollapsed = collapsed.Contains(path);
+            Rect h = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(h, new Color(0.19f, 0.19f, 0.23f));
+            if (GUI.Button(new Rect(h.x + 4, h.y + 5, 20, 18), isCollapsed ? ">" : "v", smallButtonStyle))
+                ToggleCollapse(path);
+
+            GUI.Label(new Rect(h.x + 30, h.y + 5, 260, 18), label + "  object", EditorStyles.boldLabel);
+
+            if (GUI.Button(new Rect(h.xMax - 82, h.y + 5, 76, 18), "Add Field", smallButtonStyle))
+            {
+                StringInputWindow.Open("Add Field", "Field name", "", delegate(string field)
+                {
+                    field = (field ?? "").Trim();
+                    if (field.Length > 0 && obj.Property(field) == null)
+                    {
+                        obj[field] = "";
+                        OnTokenChanged();
+                    }
+                });
+            }
+
+            if (!isCollapsed)
+                DrawObject(obj, path);
+        }
+
+        private void DrawPropertyRow(JProperty prop)
+        {
+            Rect r = GUILayoutUtility.GetRect(0, RowHeight, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(0.17f, 0.17f, 0.21f));
+            GUI.Label(new Rect(r.x + 8, r.y + 4, 220, 18), prop.Name);
+            DrawValueField(prop.Value, new Rect(r.x + 236, r.y + 2, r.width - 246, RowHeight - 4), delegate(JToken token)
+            {
+                prop.Value = token ?? JValue.CreateNull();
+                OnTokenChanged();
+            });
+        }
+
+        private void DrawArraySection(JArray arr, string path, string label, bool rootArray)
+        {
+            bool isCollapsed = !rootArray && collapsed.Contains(path);
+
+            Rect h = GUILayoutUtility.GetRect(0, 30, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(h, new Color(0.19f, 0.19f, 0.23f));
+
+            float x = h.x + 6;
+            if (!rootArray)
+            {
+                if (GUI.Button(new Rect(x, h.y + 6, 20, 18), isCollapsed ? ">" : "v", smallButtonStyle))
+                    ToggleCollapse(path);
+                x += 26;
+            }
+
+            GUI.Label(new Rect(x, h.y + 6, 260, 18), label + "  rows: " + arr.Count, EditorStyles.boldLabel);
+
+            float bx = h.xMax - 454;
+            if (GUI.Button(new Rect(bx, h.y + 5, 68, 20), "Add Row", smallButtonStyle))
+                AddRow(arr, path);
+            bx += 72;
+
+            if (GUI.Button(new Rect(bx, h.y + 5, 74, 20), "Add Field", smallButtonStyle))
+                AskAddColumn(arr);
+            bx += 78;
+
+            if (GUI.Button(new Rect(bx, h.y + 5, 76, 20), "Paste Row", smallButtonStyle))
+                PasteRow(arr, path, arr.Count);
+            bx += 80;
+
+            if (GUI.Button(new Rect(bx, h.y + 5, 76, 20), "Copy TSV", smallButtonStyle))
+                CopyTsv(arr, GetColumns(arr), GetVisibleRows(arr, path));
+            bx += 80;
+
+            if (GUI.Button(new Rect(bx, h.y + 5, 66, 20), "CSV", smallButtonStyle))
+                ShowCsvMenu(arr, path);
+            bx += 70;
+
+            if (GUI.Button(new Rect(bx, h.y + 5, 66, 20), "Sort", smallButtonStyle))
+                ShowSortMenu(arr, path);
+
+            if (!isCollapsed)
+                DrawTable(arr, path);
+        }
+
+        private void DrawTable(JArray arr, string path)
+        {
+            bool objectTable = IsObjectTable(arr);
+            List<string> columns = objectTable ? GetColumns(arr) : new List<string> { "value" };
+            List<int> visibleRows = GetVisibleRows(arr, path);
+
+            DrawTableToolbar(arr, path, columns, visibleRows, objectTable);
+
+            if (arr.Count == 0)
+            {
+                DrawEmptyTable(arr, path);
+                return;
+            }
+
+            if (visibleRows.Count == 0)
+            {
+                EditorGUILayout.HelpBox("No row matches current filter.", MessageType.Info);
+                return;
+            }
+
+            float[] widths = BuildColumnWidths(arr, path, columns, objectTable);
+            float tableWidth = RowNumberWidth + ActionWidth + widths.Sum() + columns.Count * 2 + 8;
+
+            if (!tableScroll.ContainsKey(path))
+                tableScroll[path] = Vector2.zero;
+
+            Vector2 sv = tableScroll[path];
+
+            Rect header = GUILayoutUtility.GetRect(0, RowHeight, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(header, new Color(0.18f, 0.20f, 0.26f));
+
+            GUI.BeginGroup(header);
+            DrawTableHeader(-sv.x, header.width, arr, path, columns, widths);
             GUI.EndGroup();
 
-            // ── Scrollable body ────────────────────────────────────
-            float rowsH = visibleRows.Count * (CellH + 1);
-            float bodyH = Mathf.Min(rowsH + 4, MaxTableH);
-            bool needV = rowsH + 4 > bodyH;
+            float bodyHeight = Mathf.Min(visibleRows.Count * (RowHeight + 1) + 4, 720f);
+            Rect body = GUILayoutUtility.GetRect(0, Mathf.Max(44, bodyHeight), GUILayout.ExpandWidth(true));
+            Rect inner = new Rect(0, 0, Mathf.Max(tableWidth, body.width), visibleRows.Count * (RowHeight + 1) + 4);
 
-            var bodyR = GUILayoutUtility.GetRect(0, bodyH, GUILayout.ExpandWidth(true));
-            var innerR = new Rect(0, 0, Mathf.Max(contentW, bodyR.width), rowsH + 4);
+            sv = GUI.BeginScrollView(body, sv, inner, tableWidth > body.width, inner.height > body.height);
 
-            sv = GUI.BeginScrollView(bodyR, sv, innerR,
-                alwaysShowHorizontal: contentW > bodyR.width,
-                alwaysShowVertical: needV);
+            int deleteRow = -1;
+            int duplicateRow = -1;
+            int convertRow = -1;
 
-            int removeAt = -1;
-            int duplicateAt = -1;
+            for (int visualIndex = 0; visualIndex < visibleRows.Count; visualIndex++)
+            {
+                int rowIndex = visibleRows[visualIndex];
+                Rect rowRect = new Rect(0, visualIndex * (RowHeight + 1), inner.width, RowHeight);
+                bool selected = selectedTablePath == path && selectedRowIndex == rowIndex;
 
-            for (int vis = 0; vis < visibleRows.Count; vis++) {
-                int ri = visibleRows[vis];
-                if (arr[ri] is not JObject row) continue;
-                float ry = vis * (CellH + 1);
-                bool isSel = _selTablePath == path && _selRowIndex == ri;
+                EditorGUI.DrawRect(rowRect, selected ? new Color(0.23f, 0.43f, 0.76f, 0.95f) :
+                    (rowIndex % 2 == 0 ? new Color(0.155f, 0.155f, 0.19f) : new Color(0.18f, 0.18f, 0.22f)));
 
-                Color bg = isSel ? ClrSelected : (ri % 2 == 0 ? ClrRowEven : ClrRowOdd);
-                EditorGUI.DrawRect(new Rect(0, ry, innerR.width, CellH), bg);
-                EditorGUI.DrawRect(new Rect(0, ry + CellH, innerR.width, 1), ClrSep);
+                DrawRowActions(arr, path, rowRect, rowIndex, visualIndex, visibleRows, ref deleteRow, ref duplicateRow);
 
-                float rx = 0;
+                float x = RowNumberWidth + ActionWidth;
+                JToken rowToken = arr[rowIndex];
+                JObject rowObject = rowToken as JObject;
 
-                // ─ Row number / select ─────────────────────────────
-                if (GUI.Button(new Rect(rx + 1, ry + 2, RowNumW - 2, CellH - 4),
-                        (ri + 1).ToString(), _rowNumStyle)) {
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    GUI.FocusControl(null);
+                if (objectTable)
+                {
+                    if (rowObject == null)
+                    {
+                        Rect valueRect = new Rect(x + 1, rowRect.y + 2, Mathf.Max(260, rowRect.width - x - 96), RowHeight - 4);
+                        DrawValueField(rowToken, valueRect, delegate(JToken token)
+                        {
+                            arr[rowIndex] = token ?? JValue.CreateNull();
+                            SelectRow(path, rowIndex);
+                            OnTokenChanged();
+                        });
+
+                        if (GUI.Button(new Rect(valueRect.xMax + 4, rowRect.y + 3, 84, RowHeight - 6), "To Object", smallButtonStyle))
+                            convertRow = rowIndex;
+                    }
+                    else
+                    {
+                        for (int c = 0; c < columns.Count; c++)
+                        {
+                            string key = columns[c];
+                            Rect cell = new Rect(x + 1, rowRect.y + 2, widths[c] - 2, RowHeight - 4);
+                            JToken current = rowObject.TryGetValue(key, out JToken v) ? v : JValue.CreateNull();
+
+                            DrawValueField(current, cell, delegate(JToken token)
+                            {
+                                JObject target = arr[rowIndex] as JObject;
+                                if (target == null)
+                                {
+                                    target = new JObject();
+                                    arr[rowIndex] = target;
+                                }
+
+                                target[key] = token ?? JValue.CreateNull();
+                                selectedCellRow = rowIndex;
+                                selectedColumnKey = key;
+                                SelectRow(path, rowIndex);
+                                OnTokenChanged();
+                            });
+
+                            HandleCellContext(arr, rowIndex, key, current, cell);
+                            x += widths[c] + 2;
+                        }
+                    }
                 }
-
-                rx += RowNumW;
-
-                // ─ Drag / delete / duplicate actions ────────────────
-                var dragR = new Rect(rx + 1, ry + 2, DragHandleW, CellH - 4);
-                GUI.Label(dragR, "≡", _actionBtn);
-                HandleRowDrag(arr, path, visibleRows, vis, ri, dragR);
-
-                var prevC = GUI.color;
-                GUI.color = new Color(1f, 0.5f, 0.5f);
-                if (GUI.Button(new Rect(rx + 25, ry + 2, 22, CellH - 4), "✕", _actionBtn)) removeAt = ri;
-                GUI.color = prevC;
-
-                if (GUI.Button(new Rect(rx + 50, ry + 2, 22, CellH - 4), "⧉", _actionBtn)) duplicateAt = ri;
-                rx += ActionsColW;
-
-                // ─ Data cells ──────────────────────────────────────
-                for (int ci = 0; ci < keys.Count; ci++) {
-                    string key = keys[ci];
-                    var cell = new Rect(rx + 1, ry + 1, colW[ci] - 2, CellH - 2);
-                    JToken cur = row.TryGetValue(key, out var tv) ? tv : JValue.CreateNull();
-                    int cRi = ri;
-                    string cKey = key;
-                    DrawTokenValueField(cur, cell, newTok => {
-                        ((JObject)arr[cRi])[cKey] = newTok;
-                        _selCellRowIndex = cRi;
-                        _selCellKey = cKey;
+                else
+                {
+                    Rect cell = new Rect(x + 1, rowRect.y + 2, widths[0] - 2, RowHeight - 4);
+                    DrawValueField(rowToken, cell, delegate(JToken token)
+                    {
+                        arr[rowIndex] = token ?? JValue.CreateNull();
+                        SelectRow(path, rowIndex);
                         OnTokenChanged();
                     });
 
-                    if (Event.current.type == EventType.ContextClick && cell.Contains(Event.current.mousePosition)) {
-                        _selTablePath = path;
-                        _selRowIndex = ri;
-                        _selCellRowIndex = ri;
-                        _selCellKey = key;
-                        ShowCellContextMenu(arr, visibleRows, ri, key, cur);
-                        Event.current.Use();
-                    }
-
-                    rx += colW[ci] + 2;
+                    HandleCellContext(arr, rowIndex, "value", rowToken, cell);
                 }
 
-                // ─ Right-click context menu ─────────────────────────
-                if (Event.current.type == EventType.ContextClick &&
-                    new Rect(0, ry, innerR.width, CellH).Contains(Event.current.mousePosition)) {
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    ShowRowContextMenu(arr, ri, path);
-                    Event.current.Use();
-                }
-
-                // ─ Left-click on row num area to select ────────────
-                if (Event.current.type == EventType.MouseDown && Event.current.button == 0 &&
-                    new Rect(0, ry, RowNumW, CellH).Contains(Event.current.mousePosition)) {
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    Repaint();
-                }
+                HandleRowContext(arr, path, rowRect, rowIndex);
             }
 
-            DrawRowDropMarker(path, innerR.width, visibleRows.Count);
-            HandleRowDragDropMouseUp(arr, path, visibleRows);
+            DrawDropMarker(path, inner.width, visibleRows.Count);
+            HandleDragMouseUp(arr, path, visibleRows);
 
             GUI.EndScrollView();
-            _tableScrolls[path] = sv;
+            tableScroll[path] = sv;
 
-            // Deferred mutations (after EndScrollView to avoid IMGUI layout errors/crashes)
-            if (_pendingMoveTablePath == path && _pendingMoveFromIndex >= 0 && _pendingMoveTargetIndex >= 0) {
-                MoveRowToIndex(arr, _pendingMoveFromIndex, _pendingMoveTargetIndex);
-                _pendingMoveTablePath = "";
-                _pendingMoveFromIndex = -1;
-                _pendingMoveTargetIndex = -1;
-                GUIUtility.ExitGUI();
+            ApplyPendingRowChanges(arr, path, deleteRow, duplicateRow, convertRow, columns);
+        }
+
+        private void DrawTableToolbar(JArray arr, string path, List<string> columns, List<int> visibleRows, bool objectTable)
+        {
+            Rect r = GUILayoutUtility.GetRect(0, 28, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(0.13f, 0.14f, 0.18f));
+
+            float x = r.x + 8;
+            GUI.Label(new Rect(x, r.y + 5, 110, 18), "Rows: " + visibleRows.Count + "/" + arr.Count, EditorStyles.miniLabel);
+            x += 110;
+
+            GUI.Label(new Rect(x, r.y + 5, 34, 18), "Find", EditorStyles.miniLabel);
+            x += 34;
+
+            string oldFilter = tableFilter.TryGetValue(path, out string f) ? f : "";
+            string newFilter = EditorGUI.TextField(new Rect(x, r.y + 4, 190, 19), oldFilter, EditorStyles.toolbarSearchField);
+            if (newFilter != oldFilter)
+                tableFilter[path] = newFilter;
+            x += 196;
+
+            if (!string.IsNullOrEmpty(oldFilter) && GUI.Button(new Rect(x, r.y + 4, 48, 19), "Clear", smallButtonStyle))
+                tableFilter[path] = "";
+            x += 54;
+
+            if (GUI.Button(new Rect(x, r.y + 4, 70, 19), "Add Row", smallButtonStyle))
+                AddRow(arr, path);
+            x += 74;
+
+            using (new EditorGUI.DisabledScope(!objectTable))
+            {
+                if (GUI.Button(new Rect(x, r.y + 4, 74, 19), "Add Field", smallButtonStyle))
+                    AskAddColumn(arr);
             }
+            x += 78;
 
-            if (duplicateAt >= 0) {
-                var clone = (JObject)((JObject)arr[duplicateAt]).DeepClone();
-                arr.Insert(duplicateAt + 1, clone);
-                _selTablePath = path;
-                _selRowIndex = duplicateAt + 1;
-                OnTokenChanged();
-                GUIUtility.ExitGUI();
-            }
+            if (GUI.Button(new Rect(x, r.y + 4, 78, 19), "Paste Row", smallButtonStyle))
+                PasteRow(arr, path, arr.Count);
+            x += 82;
 
-            if (removeAt >= 0) {
-                arr.RemoveAt(removeAt);
-                if (_selTablePath == path && _selRowIndex >= arr.Count) _selRowIndex = arr.Count - 1;
-                OnTokenChanged();
-                GUIUtility.ExitGUI();
+            using (new EditorGUI.DisabledScope(selectedTablePath != path || selectedRowIndex < 0))
+            {
+                if (GUI.Button(new Rect(x, r.y + 4, 52, 19), "Top", smallButtonStyle))
+                    MoveSelectedRowTo(arr, 0);
+                x += 56;
+
+                if (GUI.Button(new Rect(x, r.y + 4, 66, 19), "Bottom", smallButtonStyle))
+                    MoveSelectedRowTo(arr, arr.Count);
             }
         }
 
-        // ── Frozen header row ──────────────────────────────────────
-        private void DrawFrozenHeader(float hScrollX, float visibleW, List<string> keys, float[] colW, string path, JArray arr) {
-            float x = -hScrollX;
+        private void DrawEmptyTable(JArray arr, string path)
+        {
+            Rect r = GUILayoutUtility.GetRect(0, 70, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(0.12f, 0.12f, 0.15f));
+            GUI.Label(new Rect(r.x + 8, r.y + 8, r.width - 16, 18), "Empty table. Add a row or field to start editing.", EditorStyles.miniLabel);
 
-            // Row# column (always visible, not scrolled)
-            EditorGUI.DrawRect(new Rect(0, 0, RowNumW, CellH), ClrHeaderBg);
-            GUI.Label(new Rect(0, 0, RowNumW, CellH), "#", _rowNumStyle);
+            if (GUI.Button(new Rect(r.x + 8, r.y + 36, 80, 22), "Add Row", smallButtonStyle))
+                AddRow(arr, path);
 
-            // Actions column (always visible)
-            EditorGUI.DrawRect(new Rect(RowNumW, 0, ActionsColW, CellH), ClrHeaderBg);
+            if (GUI.Button(new Rect(r.x + 96, r.y + 36, 84, 22), "Add Field", smallButtonStyle))
+                AskAddColumn(arr);
 
-            x = RowNumW + ActionsColW - hScrollX;
+            if (GUI.Button(new Rect(r.x + 188, r.y + 36, 86, 22), "Paste Row", smallButtonStyle))
+                PasteRow(arr, path, 0);
+        }
 
-            for (int ci = 0; ci < keys.Count; ci++) {
-                float cw = colW[ci];
-                float cellX = x;
+        private void DrawTableHeader(float x, float visibleWidth, JArray arr, string path, List<string> columns, float[] widths)
+        {
+            GUI.Label(new Rect(x, 0, RowNumberWidth, RowHeight), "#", rowNumberStyle);
+            x += RowNumberWidth;
 
-                // Cull off-screen
-                if (cellX + cw < RowNumW + ActionsColW || cellX > visibleW) {
-                    x += cw + 2;
-                    continue;
+            GUI.Label(new Rect(x, 0, ActionWidth, RowHeight), "Actions", rowNumberStyle);
+            x += ActionWidth;
+
+            for (int i = 0; i < columns.Count; i++)
+            {
+                string key = columns[i];
+                float width = widths[i];
+                Rect cell = new Rect(x, 0, width, RowHeight);
+
+                if (cell.xMax >= 0 && cell.x <= visibleWidth)
+                {
+                    GUI.Label(new Rect(cell.x + 4, cell.y + 2, cell.width - 8, cell.height - 4), key, headerStyle);
+
+                    if (Event.current.type == EventType.ContextClick && cell.Contains(Event.current.mousePosition))
+                    {
+                        ShowColumnMenu(arr, key);
+                        Event.current.Use();
+                    }
                 }
 
-                var cellR = new Rect(cellX, 0, cw, CellH);
-                EditorGUI.DrawRect(cellR, ClrHeaderBg);
-                EditorGUI.DrawRect(new Rect(cellX, 0, 1, CellH), ClrSep);
-                GUI.Label(new Rect(cellX + 4, 1, cw - 10, CellH - 2), keys[ci], _headerCell);
-
-                // Resize handle
-                string ck = path + "." + keys[ci];
-                var handleR = new Rect(cellX + cw - ResizeHandleW * 0.5f, 0, ResizeHandleW, CellH);
-                bool hot = _resizingColKey == ck || handleR.Contains(Event.current.mousePosition);
-
-                EditorGUI.DrawRect(new Rect(cellX + cw - 2, 3, 2, CellH - 6),
-                    hot ? ClrResizeBar : new Color(0.35f, 0.4f, 0.55f, 0.5f));
-                EditorGUIUtility.AddCursorRect(handleR, MouseCursor.ResizeHorizontal);
-
-                if (Event.current.type == EventType.MouseDown && handleR.Contains(Event.current.mousePosition)) {
-                    _resizingColKey = ck;
-                    Event.current.Use();
-                }
-
-                if (Event.current.type == EventType.ContextClick && cellR.Contains(Event.current.mousePosition)) {
-                    ShowColumnContextMenu(arr, keys[ci], path);
-                    Event.current.Use();
-                }
-
-                x += cw + 2;
+                x += width + 2;
             }
         }
 
-        // ── Row context menu ───────────────────────────────────────
-        private void ShowRowContextMenu(JArray arr, int ri, string path) {
-            var menu = new GenericMenu();
+        private void DrawRowActions(JArray arr, string path, Rect rowRect, int rowIndex, int visualIndex, List<int> visibleRows, ref int deleteRow, ref int duplicateRow)
+        {
+            if (GUI.Button(new Rect(rowRect.x + 1, rowRect.y + 2, RowNumberWidth - 2, RowHeight - 4), (rowIndex + 1).ToString(), rowNumberStyle))
+                SelectRow(path, rowIndex);
 
-            menu.AddItem(new GUIContent("Copy Row\tCtrl+C"), false, () => {
-                _selTablePath = path;
-                _selRowIndex = ri;
-                CopySelectedRow();
-            });
+            float x = RowNumberWidth;
 
-            bool hasPaste = _clipboardRow != null;
-            if (hasPaste) {
-                menu.AddItem(new GUIContent("Paste Above"), false, () => {
-                    arr.Insert(ri, (JObject)_clipboardRow.DeepClone());
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    OnTokenChanged();
-                });
-                menu.AddItem(new GUIContent("Paste Below\tCtrl+V"), false, () => {
-                    arr.Insert(ri + 1, (JObject)_clipboardRow.DeepClone());
-                    _selTablePath = path;
-                    _selRowIndex = ri + 1;
-                    OnTokenChanged();
-                });
+            Rect dragRect = new Rect(x + 2, rowRect.y + 2, 20, RowHeight - 4);
+            GUI.Label(dragRect, "=", smallButtonStyle);
+            HandleRowDrag(arr, path, visibleRows, visualIndex, rowIndex, dragRect);
+
+            if (GUI.Button(new Rect(x + 26, rowRect.y + 2, 28, RowHeight - 4), "X", smallButtonStyle))
+                deleteRow = rowIndex;
+
+            if (GUI.Button(new Rect(x + 58, rowRect.y + 2, 30, RowHeight - 4), "D", smallButtonStyle))
+                duplicateRow = rowIndex;
+        }
+
+        private void DrawValueField(JToken token, Rect rect, Action<JToken> onChange)
+        {
+            if (token == null)
+                token = JValue.CreateNull();
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                bool current = token.Value<bool>();
+                bool next = EditorGUI.Toggle(new Rect(rect.x + 4, rect.y + 3, 18, rect.height - 6), current);
+                GUI.Label(new Rect(rect.x + 28, rect.y + 3, rect.width - 30, rect.height - 6), current ? "true" : "false", EditorStyles.miniLabel);
+                if (next != current)
+                    onChange(new JValue(next));
+                return;
             }
-            else {
-                menu.AddDisabledItem(new GUIContent("Paste Above"));
-                menu.AddDisabledItem(new GUIContent("Paste Below\tCtrl+V"));
+
+            if (token.Type == JTokenType.Object || token.Type == JTokenType.Array)
+            {
+                Rect preview = new Rect(rect.x, rect.y, Mathf.Max(30, rect.width - 46), rect.height);
+                Rect edit = new Rect(rect.xMax - 42, rect.y + 1, 42, rect.height - 2);
+                EditorGUI.DrawRect(preview, new Color(0.20f, 0.23f, 0.31f));
+                GUI.Label(new Rect(preview.x + 5, preview.y + 2, preview.width - 10, preview.height - 4), PreviewToken(token, 80), EditorStyles.miniLabel);
+
+                if (GUI.Button(edit, "Edit", smallButtonStyle))
+                {
+                    JsonTokenEditWindow.Open(token, delegate(JToken edited)
+                    {
+                        onChange(edited);
+                    });
+                }
+
+                return;
             }
 
+            string oldValue = TokenToText(token);
+            EditorGUI.BeginChangeCheck();
+            string newValue = EditorGUI.DelayedTextField(rect, oldValue, cellStyle);
+            if (EditorGUI.EndChangeCheck())
+                onChange(ParseCell(newValue, token));
+        }
+
+        private void HandleCellContext(JArray arr, int rowIndex, string key, JToken value, Rect cell)
+        {
+            if (Event.current.type == EventType.ContextClick && cell.Contains(Event.current.mousePosition))
+            {
+                selectedCellRow = rowIndex;
+                selectedColumnKey = key;
+                ShowCellMenu(arr, rowIndex, key, value);
+                Event.current.Use();
+            }
+        }
+
+        private void HandleRowContext(JArray arr, string path, Rect rowRect, int rowIndex)
+        {
+            if (Event.current.type == EventType.MouseDown && Event.current.button == 0 && rowRect.Contains(Event.current.mousePosition))
+            {
+                SelectRow(path, rowIndex);
+                Repaint();
+            }
+
+            if (Event.current.type == EventType.ContextClick && rowRect.Contains(Event.current.mousePosition))
+            {
+                SelectRow(path, rowIndex);
+                ShowRowMenu(arr, path, rowIndex);
+                Event.current.Use();
+            }
+        }
+
+        private void ShowRowMenu(JArray arr, string path, int rowIndex)
+        {
+            GenericMenu menu = new GenericMenu();
+
+            menu.AddItem(new GUIContent("Copy Row"), false, delegate { CopyRow(arr, rowIndex); });
+            menu.AddItem(new GUIContent("Paste Above"), false, delegate { PasteRow(arr, path, rowIndex); });
+            menu.AddItem(new GUIContent("Paste Below"), false, delegate { PasteRow(arr, path, rowIndex + 1); });
             menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Duplicate Row\tCtrl+D"), false, () => {
-                var clone = (JObject)((JObject)arr[ri]).DeepClone();
-                arr.Insert(ri + 1, clone);
-                _selTablePath = path;
-                _selRowIndex = ri + 1;
-                OnTokenChanged();
-            });
-
-            menu.AddItem(new GUIContent("Insert Empty Above"), false, () => {
-                arr.Insert(ri, CreateEmptyRowLike(arr, ri));
-                _selTablePath = path;
-                _selRowIndex = ri;
-                OnTokenChanged();
-            });
-
-            menu.AddItem(new GUIContent("Insert Empty Below"), false, () => {
-                arr.Insert(ri + 1, CreateEmptyRowLike(arr, ri));
-                _selTablePath = path;
-                _selRowIndex = ri + 1;
-                OnTokenChanged();
-            });
-
+            menu.AddItem(new GUIContent("Duplicate Row"), false, delegate { DuplicateRow(arr, path, rowIndex); });
+            menu.AddItem(new GUIContent("Insert Empty Above"), false, delegate { InsertEmptyRow(arr, path, rowIndex); });
+            menu.AddItem(new GUIContent("Insert Empty Below"), false, delegate { InsertEmptyRow(arr, path, rowIndex + 1); });
             menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Move Row To..."), false, () => {
-                _selTablePath = path;
-                _selRowIndex = ri;
-                StringInputWindow.Open("Move Row", "Move to row number (1-based):", (ri + 1).ToString(),
-                    s => MoveSelectedRowToSpecificOrder(s));
-            });
-
-            menu.AddItem(new GUIContent("Move To Top"), false, () => {
-                _selTablePath = path;
-                _selRowIndex = ri;
-                MoveSelectedRowToIndex(0);
-            });
-
-            menu.AddItem(new GUIContent("Move To Bottom"), false, () => {
-                _selTablePath = path;
-                _selRowIndex = ri;
-                MoveSelectedRowToIndex(arr.Count);
-            });
-
+            menu.AddItem(new GUIContent("Move Up"), rowIndex > 0, delegate { MoveRowTo(arr, rowIndex, rowIndex - 1); });
+            menu.AddItem(new GUIContent("Move Down"), rowIndex < arr.Count - 1, delegate { MoveRowTo(arr, rowIndex, rowIndex + 2); });
+            menu.AddItem(new GUIContent("Move To Top"), false, delegate { MoveRowTo(arr, rowIndex, 0); });
+            menu.AddItem(new GUIContent("Move To Bottom"), false, delegate { MoveRowTo(arr, rowIndex, arr.Count); });
             menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Copy/Row JSON Pretty"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = arr[ri].ToString(Formatting.Indented);
-                SetStatus($"📋 Row {ri + 1} copied as pretty JSON.", MessageType.Info);
+            menu.AddItem(new GUIContent("Copy Row JSON"), false, delegate
+            {
+                EditorGUIUtility.systemCopyBuffer = arr[rowIndex].ToString(Formatting.Indented);
+                SetStatus("Row JSON copied.", MessageType.Info);
             });
-
-            menu.AddItem(new GUIContent("Copy/Row Display Name"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = GetRowDisplayName(arr[ri], ri);
-                SetStatus("📋 Row display name copied.", MessageType.Info);
-            });
-
-            menu.AddItem(new GUIContent("Copy/Current Config Name"), false, CopyCurrentConfigName);
-            menu.AddItem(new GUIContent("Copy/Current Config Path"), false, CopyCurrentConfigPath);
-
-            menu.AddSeparator("");
-            if (ri > 0)
-                menu.AddItem(new GUIContent("Move Up\tCtrl+↑"), false, () => {
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    MoveSelectedRow(-1);
-                });
-            else
-                menu.AddDisabledItem(new GUIContent("Move Up\tCtrl+↑"));
-
-            if (ri < arr.Count - 1)
-                menu.AddItem(new GUIContent("Move Down\tCtrl+↓"), false, () => {
-                    _selTablePath = path;
-                    _selRowIndex = ri;
-                    MoveSelectedRow(1);
-                });
-            else
-                menu.AddDisabledItem(new GUIContent("Move Down\tCtrl+↓"));
-
-            menu.AddSeparator("");
-            menu.AddItem(new GUIContent("Delete Row\tDel"), false, () => {
-                _selTablePath = path;
-                _selRowIndex = ri;
-                DeleteSelectedRow();
+            menu.AddItem(new GUIContent("Delete Row"), false, delegate
+            {
+                if (EditorUtility.DisplayDialog(WindowTitle, "Delete this row?", "Delete", "Cancel"))
+                    DeleteRow(arr, rowIndex);
             });
 
             menu.ShowAsContext();
         }
 
+        private void ShowCellMenu(JArray arr, int rowIndex, string key, JToken value)
+        {
+            GenericMenu menu = new GenericMenu();
 
-        // ── Column context menu ────────────────────────────────────
-        private void ShowColumnContextMenu(JArray arr, string key, string path) {
-            var menu = new GenericMenu();
-
-            menu.AddItem(new GUIContent($"Copy Column JSON/{key}"), false, () => {
-                var values = new JArray();
-                foreach (var tok in arr)
-                    values.Add(tok is JObject row && row.TryGetValue(key, out var v) ? v.DeepClone() : JValue.CreateNull());
-                EditorGUIUtility.systemCopyBuffer = values.ToString(Formatting.None);
-                SetStatus($"📋 Column '{key}' copied as JSON array.", MessageType.Info);
+            menu.AddItem(new GUIContent("Copy Cell Text"), false, delegate
+            {
+                EditorGUIUtility.systemCopyBuffer = TokenToText(value);
+                SetStatus("Cell copied.", MessageType.Info);
             });
 
-            menu.AddItem(new GUIContent($"Copy Column Text Lines/{key}"), false, () => {
-                var lines = arr.Select(tok =>
-                    tok is JObject row && row.TryGetValue(key, out var v) ? ScalarToDisplayString(v) : "");
-                EditorGUIUtility.systemCopyBuffer = string.Join("\n", lines);
-                SetStatus($"📋 Column '{key}' copied as text lines.", MessageType.Info);
+            menu.AddItem(new GUIContent("Copy Cell JSON"), false, delegate
+            {
+                EditorGUIUtility.systemCopyBuffer = value == null ? "null" : value.ToString(Formatting.None);
+                SetStatus("Cell JSON copied.", MessageType.Info);
             });
 
-            menu.AddItem(new GUIContent($"Copy Column Key Name/{key}"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = key;
-                SetStatus($"📋 Key '{key}' copied.", MessageType.Info);
+            menu.AddItem(new GUIContent("Paste Cell"), false, delegate
+            {
+                SetCell(arr, rowIndex, key, ParseCell(EditorGUIUtility.systemCopyBuffer, value));
             });
 
             menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent($"Sort/{key}/Auto Ascending"), false, () => SortRowsByColumn(path, arr, key, true, SortValueMode.Auto));
-            menu.AddItem(new GUIContent($"Sort/{key}/Auto Descending"), false, () => SortRowsByColumn(path, arr, key, false, SortValueMode.Auto));
-            menu.AddItem(new GUIContent($"Sort/{key}/Number Ascending"), false, () => SortRowsByColumn(path, arr, key, true, SortValueMode.Number));
-            menu.AddItem(new GUIContent($"Sort/{key}/Number Descending"), false, () => SortRowsByColumn(path, arr, key, false, SortValueMode.Number));
-            menu.AddItem(new GUIContent($"Sort/{key}/Text A → Z"), false, () => SortRowsByColumn(path, arr, key, true, SortValueMode.Text));
-            menu.AddItem(new GUIContent($"Sort/{key}/Text Z → A"), false, () => SortRowsByColumn(path, arr, key, false, SortValueMode.Text));
-            menu.AddItem(new GUIContent($"Sort/{key}/Date Old → New"), false, () => SortRowsByColumn(path, arr, key, true, SortValueMode.Date));
-            menu.AddItem(new GUIContent($"Sort/{key}/Date New → Old"), false, () => SortRowsByColumn(path, arr, key, false, SortValueMode.Date));
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent($"Rename Column/{key}"), false, () => {
-                StringInputWindow.Open("Rename Field", "New field name:", key, newName => RenameColumn(arr, key, newName));
+            menu.AddItem(new GUIContent("Edit Cell As JSON"), false, delegate
+            {
+                JsonTokenEditWindow.Open(value ?? JValue.CreateNull(), delegate(JToken edited)
+                {
+                    SetCell(arr, rowIndex, key, edited);
+                });
             });
 
-            menu.AddItem(new GUIContent($"Move Column Left/{key}"), false, () => MoveColumn(arr, key, -1));
-            menu.AddItem(new GUIContent($"Move Column Right/{key}"), false, () => MoveColumn(arr, key, 1));
+            menu.AddItem(new GUIContent("Set Null"), false, delegate { SetCell(arr, rowIndex, key, JValue.CreateNull()); });
+            menu.AddItem(new GUIContent("Set True"), false, delegate { SetCell(arr, rowIndex, key, new JValue(true)); });
+            menu.AddItem(new GUIContent("Set False"), false, delegate { SetCell(arr, rowIndex, key, new JValue(false)); });
 
             menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Fill Down"), false, delegate { FillDown(arr, rowIndex, key, value); });
+            menu.AddItem(new GUIContent("Fill Empty In Column"), false, delegate { FillEmpty(arr, key, value); });
 
-            menu.AddItem(new GUIContent($"Set All Values.../{key}"), false, () => {
-                StringInputWindow.Open("Set Column Values", $"Set all values for '{key}' to:", "",
-                    value => SetColumnAllValues(arr, key, value));
-            });
-
-            menu.AddItem(new GUIContent($"Fill Empty Values.../{key}"), false, () => {
-                StringInputWindow.Open("Fill Empty Values", $"Fill empty/null values in '{key}' with:", "",
-                    value => FillEmptyColumnValues(arr, key, value));
-            });
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent($"Delete Column/{key}"), false, () => {
-                if (!EditorUtility.DisplayDialog("Delete Column",
-                        $"Remove field '{key}' from all rows in this table?", "Delete", "Cancel")) return;
-
-                foreach (var tok in arr)
-                    if (tok is JObject row)
-                        row.Remove(key);
-
-                OnTokenChanged();
-            });
-
-            menu.AddSeparator("");
-            menu.AddDisabledItem(new GUIContent("Tip: drag ≡ handle to reorder rows"));
             menu.ShowAsContext();
         }
 
-        private void AddColumnToRows(JArray arr, string columnName) {
-            columnName = (columnName ?? "").Trim();
-            if (string.IsNullOrEmpty(columnName)) return;
+        private void ShowColumnMenu(JArray arr, string key)
+        {
+            GenericMenu menu = new GenericMenu();
 
-            bool exists = arr.OfType<JObject>().Any(o => o.Property(columnName) != null);
-            if (exists && !EditorUtility.DisplayDialog("Column Exists",
-                    $"Field '{columnName}' already exists in at least one row. Add missing cells only?", "Add Missing", "Cancel")) return;
+            menu.AddItem(new GUIContent("Copy Column Text"), false, delegate { CopyColumnText(arr, key); });
+            menu.AddItem(new GUIContent("Copy Column JSON"), false, delegate { CopyColumnJson(arr, key); });
+            menu.AddItem(new GUIContent("Copy Column Name"), false, delegate { EditorGUIUtility.systemCopyBuffer = key; });
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Sort Ascending"), false, delegate { SortByColumn(arr, key, true); });
+            menu.AddItem(new GUIContent("Sort Descending"), false, delegate { SortByColumn(arr, key, false); });
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Rename Column"), false, delegate
+            {
+                StringInputWindow.Open("Rename Column", "New field name", key, delegate(string newName) { RenameColumn(arr, key, newName); });
+            });
+            menu.AddItem(new GUIContent("Set All Values"), false, delegate
+            {
+                StringInputWindow.Open("Set All Values", "Value", "", delegate(string value) { SetAll(arr, key, value); });
+            });
+            menu.AddItem(new GUIContent("Fill Empty Values"), false, delegate
+            {
+                StringInputWindow.Open("Fill Empty", "Value", "", delegate(string value) { FillEmpty(arr, key, ParseCell(value, FindSample(arr, key))); });
+            });
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Delete Column"), false, delegate
+            {
+                if (EditorUtility.DisplayDialog(WindowTitle, "Delete column " + key + "?", "Delete", "Cancel"))
+                    DeleteColumn(arr, key);
+            });
 
-            foreach (var tok in arr)
-                if (tok is JObject row && row.Property(columnName) == null)
-                    row[columnName] = "";
+            menu.ShowAsContext();
+        }
 
+        private void ShowCsvMenu(JArray arr, string path)
+        {
+            GenericMenu menu = new GenericMenu();
+            menu.AddItem(new GUIContent("Copy TSV"), false, delegate { CopyTsv(arr, GetColumns(arr), GetVisibleRows(arr, path)); });
+            menu.AddItem(new GUIContent("Paste TSV Append"), false, delegate { PasteTsv(arr, false); });
+            menu.AddItem(new GUIContent("Paste TSV Replace"), false, delegate { PasteTsv(arr, true); });
+            menu.ShowAsContext();
+        }
+
+        private void ShowSortMenu(JArray arr, string path)
+        {
+            List<string> cols = GetColumns(arr);
+            GenericMenu menu = new GenericMenu();
+
+            foreach (string col in cols)
+            {
+                string key = col;
+                menu.AddItem(new GUIContent(key + " Ascending"), false, delegate { SortByColumn(arr, key, true); });
+                menu.AddItem(new GUIContent(key + " Descending"), false, delegate { SortByColumn(arr, key, false); });
+            }
+
+            if (cols.Count == 0)
+                menu.AddDisabledItem(new GUIContent("No columns"));
+
+            menu.ShowAsContext();
+        }
+
+        private void AddRow(JArray arr, string path)
+        {
+            JToken row = CreateEmptyRowLike(arr);
+            arr.Add(row);
+            SelectRow(path, arr.Count - 1);
             OnTokenChanged();
-        }
-
-        // ── CSV import / export ─────────────────────────────────
-        private void ShowCsvMenu(string path, JArray arr, List<int> visibleRowIndices, List<string> keys) {
-            var menu = new GenericMenu();
-            var visible = visibleRowIndices ?? Enumerable.Range(0, arr.Count).ToList();
-            var all = Enumerable.Range(0, arr.Count).ToList();
-            bool hasVisibleFilter = visible.Count != arr.Count;
-
-            menu.AddItem(new GUIContent("Export CSV/All Rows..."), false,
-                () => ExportTableToCsvFile(path, arr, all, keys, false));
-
-            if (hasVisibleFilter)
-                menu.AddItem(new GUIContent("Export CSV/Visible Filtered Rows..."), false,
-                    () => ExportTableToCsvFile(path, arr, visible, keys, true));
-            else
-                menu.AddDisabledItem(new GUIContent("Export CSV/Visible Filtered Rows..."));
-
-            menu.AddItem(new GUIContent("Copy CSV To Clipboard/All Rows"), false,
-                () => CopyTableCsvToClipboard(arr, all, keys, false));
-
-            if (hasVisibleFilter)
-                menu.AddItem(new GUIContent("Copy CSV To Clipboard/Visible Filtered Rows"), false,
-                    () => CopyTableCsvToClipboard(arr, visible, keys, true));
-            else
-                menu.AddDisabledItem(new GUIContent("Copy CSV To Clipboard/Visible Filtered Rows"));
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Import CSV From File/Replace Table..."), false,
-                () => ImportCsvFileToTable(arr, path, CsvImportMode.Replace));
-            menu.AddItem(new GUIContent("Import CSV From File/Append Rows..."), false,
-                () => ImportCsvFileToTable(arr, path, CsvImportMode.Append));
-            menu.AddItem(new GUIContent("Import CSV From File/Update By Key..."), false,
-                () => AskCsvUpdateKeyAndImport(arr, path));
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Paste CSV From Clipboard/Replace Table"), false,
-                () => ImportCsvTextToTable(arr, EditorGUIUtility.systemCopyBuffer, CsvImportMode.Replace, null, "Clipboard"));
-            menu.AddItem(new GUIContent("Paste CSV From Clipboard/Append Rows"), false,
-                () => ImportCsvTextToTable(arr, EditorGUIUtility.systemCopyBuffer, CsvImportMode.Append, null, "Clipboard"));
-            menu.AddItem(new GUIContent("Paste CSV From Clipboard/Update By Key..."), false,
-                () => AskCsvUpdateKeyAndImportFromClipboard(arr));
-
-            menu.AddSeparator("");
-            menu.AddDisabledItem(new GUIContent("CSV supports Excel / Google Sheets."));
-            menu.AddDisabledItem(new GUIContent("Nested object/array cells are stored as compact JSON."));
-            menu.ShowAsContext();
-        }
-
-        private void ExportTableToCsvFile(string path, JArray arr, List<int> rowIndices, List<string> keys, bool visibleOnly) {
-            string configName = CurrentFile?.DisplayName ?? "config";
-            string suffix = visibleOnly ? "visible" : "all";
-            string defaultName = SanitizeFileName($"{configName}_{PathToSafeName(path)}_{suffix}.csv");
-            string savePath = EditorUtility.SaveFilePanel("Export table to CSV", Application.dataPath, defaultName, "csv");
-            if (string.IsNullOrEmpty(savePath)) return;
-
-            try {
-                string csv = BuildCsv(arr, rowIndices, keys);
-                File.WriteAllText(savePath, csv, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-                SetStatus($"✅ Exported CSV: {Path.GetFileName(savePath)} ({rowIndices.Count} row(s)).", MessageType.Info);
-                EditorUtility.RevealInFinder(savePath);
-            }
-            catch (Exception e) {
-                SetStatus($"❌ CSV export failed: {e.Message}", MessageType.Error);
-            }
-        }
-
-        private void CopyTableCsvToClipboard(JArray arr, List<int> rowIndices, List<string> keys, bool visibleOnly) {
-            try {
-                EditorGUIUtility.systemCopyBuffer = BuildCsv(arr, rowIndices, keys);
-                SetStatus(visibleOnly
-                    ? $"📋 Visible CSV copied ({rowIndices.Count} row(s))."
-                    : $"📋 CSV copied ({rowIndices.Count} row(s)).", MessageType.Info);
-            }
-            catch (Exception e) {
-                SetStatus($"❌ CSV copy failed: {e.Message}", MessageType.Error);
-            }
-        }
-
-        private void ImportCsvFileToTable(JArray arr, string path, CsvImportMode mode, string updateKey = null) {
-            string filePath = EditorUtility.OpenFilePanel("Import CSV", Application.dataPath, "csv");
-            if (string.IsNullOrEmpty(filePath)) return;
-
-            try {
-                string csv = ReadTextBestEffort(filePath);
-                ImportCsvTextToTable(arr, csv, mode, updateKey, Path.GetFileName(filePath));
-            }
-            catch (Exception e) {
-                SetStatus($"❌ CSV import failed: {e.Message}", MessageType.Error);
-            }
-        }
-
-        private void AskCsvUpdateKeyAndImport(JArray arr, string path) {
-            string guess = GuessBestKeyName(arr);
-            StringInputWindow.Open("CSV Update By Key", "Key column name, e.g. id / name / productId:", guess,
-                key => ImportCsvFileToTable(arr, path, CsvImportMode.UpdateByKey, key));
-        }
-
-        private void AskCsvUpdateKeyAndImportFromClipboard(JArray arr) {
-            string guess = GuessBestKeyName(arr);
-            StringInputWindow.Open("CSV Update By Key", "Key column name, e.g. id / name / productId:", guess,
-                key => ImportCsvTextToTable(arr, EditorGUIUtility.systemCopyBuffer, CsvImportMode.UpdateByKey, key, "Clipboard"));
-        }
-
-        private void ImportCsvTextToTable(JArray arr, string csvText, CsvImportMode mode, string updateKey, string sourceName) {
-            if (string.IsNullOrWhiteSpace(csvText)) {
-                SetStatus("❌ CSV is empty.", MessageType.Error);
-                return;
-            }
-
-            CsvParseResult parsed;
-            try { parsed = ParseCsvSmart(csvText); }
-            catch (Exception e) {
-                SetStatus($"❌ CSV parse failed: {e.Message}", MessageType.Error);
-                return;
-            }
-
-            var table = parsed.Rows;
-            if (table.Count == 0 || table[0].Count == 0) {
-                SetStatus("❌ CSV has no header row.", MessageType.Error);
-                return;
-            }
-
-            var headerMap = BuildCsvHeaderMap(table[0]);
-            if (headerMap.Count == 0) {
-                SetStatus("❌ CSV header row is empty.", MessageType.Error);
-                return;
-            }
-
-            var headers = headerMap.Select(h => h.Name).ToList();
-            var samples = BuildColumnSamples(arr, headers);
-            var importedRows = new List<JObject>();
-
-            for (int r = 1; r < table.Count; r++) {
-                var cells = table[r];
-                if (cells == null || cells.All(string.IsNullOrWhiteSpace)) continue;
-
-                var obj = new JObject();
-                foreach (var header in headerMap) {
-                    string cell = header.SourceIndex < cells.Count ? cells[header.SourceIndex] : "";
-                    samples.TryGetValue(header.Name, out var sample);
-                    obj[header.Name] = CsvCellToToken(cell, sample);
-                }
-                importedRows.Add(obj);
-            }
-
-            if (importedRows.Count == 0) {
-                SetStatus($"❌ CSV has no data rows. Detected delimiter: {DelimiterLabel(parsed.Delimiter)}.", MessageType.Error);
-                return;
-            }
-
-            if (mode == CsvImportMode.Replace) {
-                if (!EditorUtility.DisplayDialog("Replace Table From CSV",
-                        $"Replace this table with {importedRows.Count} row(s) and {headers.Count} column(s) from {sourceName}?\n\nDetected delimiter: {DelimiterLabel(parsed.Delimiter)}", "Replace", "Cancel")) return;
-
-                arr.Clear();
-                foreach (var row in importedRows) arr.Add(row);
-                _selTablePath = "";
-                _selRowIndex = -1;
-                _columnWidths.Clear();
-                OnTokenChanged();
-                SetStatus($"✅ CSV replaced table: {importedRows.Count} row(s), {headers.Count} column(s), delimiter {DelimiterLabel(parsed.Delimiter)}.", MessageType.Info);
-                GUIUtility.ExitGUI();
-                return;
-            }
-
-            if (mode == CsvImportMode.Append) {
-                foreach (var row in importedRows) arr.Add(row);
-                _selRowIndex = arr.Count - 1;
-                _columnWidths.Clear();
-                OnTokenChanged();
-                SetStatus($"✅ CSV appended {importedRows.Count} row(s), {headers.Count} column(s), delimiter {DelimiterLabel(parsed.Delimiter)}.", MessageType.Info);
-                GUIUtility.ExitGUI();
-                return;
-            }
-
-            updateKey = (updateKey ?? "").Trim();
-            if (string.IsNullOrEmpty(updateKey)) {
-                SetStatus("❌ Update key is empty.", MessageType.Error);
-                return;
-            }
-            if (!headers.Contains(updateKey)) {
-                SetStatus($"❌ CSV does not contain key column '{updateKey}'.", MessageType.Error);
-                return;
-            }
-
-            int updated = 0, added = 0, skipped = 0;
-            var existingByKey = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in arr.OfType<JObject>()) {
-                if (!row.TryGetValue(updateKey, out var v)) continue;
-                string k = ScalarToDisplayString(v);
-                if (!string.IsNullOrWhiteSpace(k) && !existingByKey.ContainsKey(k))
-                    existingByKey.Add(k, row);
-            }
-
-            foreach (var newRow in importedRows) {
-                string keyValue = newRow.TryGetValue(updateKey, out var keyTok) ? ScalarToDisplayString(keyTok) : "";
-                if (string.IsNullOrWhiteSpace(keyValue)) { skipped++; continue; }
-
-                if (existingByKey.TryGetValue(keyValue, out var oldRow)) {
-                    foreach (var prop in newRow.Properties())
-                        oldRow[prop.Name] = prop.Value.DeepClone();
-                    updated++;
-                }
-                else {
-                    arr.Add(newRow);
-                    existingByKey[keyValue] = newRow;
-                    added++;
-                }
-            }
-
-            _columnWidths.Clear();
-            OnTokenChanged();
-            SetStatus($"✅ CSV update by '{updateKey}': {updated} updated, {added} added, {skipped} skipped. Delimiter {DelimiterLabel(parsed.Delimiter)}.", MessageType.Info);
             GUIUtility.ExitGUI();
         }
 
-        private static string BuildCsv(JArray arr, List<int> rowIndices, List<string> keys) {
-            if (arr == null) return "";
-            keys = keys != null && keys.Count > 0 ? keys : CollectObjectKeys(arr);
-            rowIndices ??= Enumerable.Range(0, arr.Count).ToList();
-
-            var sb = new StringBuilder();
-            sb.AppendLine(string.Join(",", keys.Select(CsvEscape)));
-
-            foreach (int idx in rowIndices) {
-                if (idx < 0 || idx >= arr.Count) continue;
-                JObject row = arr[idx] as JObject;
-                var cells = new List<string>();
-                foreach (string key in keys) {
-                    JToken v = row != null && row.TryGetValue(key, out var found) ? found : null;
-                    cells.Add(CsvEscape(TokenToCsvCell(v)));
-                }
-                sb.AppendLine(string.Join(",", cells));
-            }
-
-            return sb.ToString();
-        }
-
-        private static List<string> CollectObjectKeys(JArray arr) {
-            var keys = new List<string>();
-            var set = new HashSet<string>();
-            foreach (var row in arr.OfType<JObject>()) {
-                foreach (var p in row.Properties())
-                    if (set.Add(p.Name)) keys.Add(p.Name);
-            }
-            return keys;
-        }
-
-        private static string TokenToCsvCell(JToken token) {
-            if (token == null || token.Type == JTokenType.Null) return "";
-            if (token.Type == JTokenType.String) return token.Value<string>() ?? "";
-            if (token.Type == JTokenType.Object || token.Type == JTokenType.Array)
-                return token.ToString(Formatting.None);
-            return token.ToString(Formatting.None);
-        }
-
-        private static string CsvEscape(string value) {
-            value ??= "";
-            bool mustQuote = value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r');
-            if (!mustQuote) return value;
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
-        }
-
-        private class CsvParseResult {
-            public List<List<string>> Rows = new();
-            public char Delimiter = ',';
-        }
-
-        private struct CsvHeaderInfo {
-            public int SourceIndex;
-            public string Name;
-        }
-
-        private static CsvParseResult ParseCsvSmart(string text) {
-            text = NormalizeCsvText(text);
-            var explicitDelimiter = TryReadSepDirective(ref text);
-            if (explicitDelimiter.HasValue) {
-                return new CsvParseResult {
-                    Rows = ParseDelimitedText(text, explicitDelimiter.Value),
-                    Delimiter = explicitDelimiter.Value
-                };
-            }
-
-            char bestDelimiter = DetectBestDelimiter(text);
-            return new CsvParseResult {
-                Rows = ParseDelimitedText(text, bestDelimiter),
-                Delimiter = bestDelimiter
-            };
-        }
-
-        // Backward-compatible wrapper for old calls.
-        private static List<List<string>> ParseCsv(string text) => ParseCsvSmart(text).Rows;
-
-        private static string NormalizeCsvText(string text) {
-            if (string.IsNullOrEmpty(text)) return "";
-            text = text.Replace("\uFEFF", "");
-            // Excel/Google Sheets clipboard sometimes uses CR-only or mixed newlines.
-            text = text.Replace("\r\n", "\n").Replace('\r', '\n');
-            return text;
-        }
-
-        private static char? TryReadSepDirective(ref string text) {
-            if (string.IsNullOrEmpty(text)) return null;
-            int firstLineEnd = text.IndexOf('\n');
-            string firstLine = firstLineEnd >= 0 ? text.Substring(0, firstLineEnd) : text;
-            firstLine = firstLine.Trim();
-
-            if (!firstLine.StartsWith("sep=", StringComparison.OrdinalIgnoreCase)) return null;
-
-            string sep = firstLine.Substring(4);
-            char delimiter = sep.Equals("\\t", StringComparison.OrdinalIgnoreCase) || sep.Equals("tab", StringComparison.OrdinalIgnoreCase)
-                ? '\t'
-                : sep.Length > 0 ? sep[0] : ',';
-
-            text = firstLineEnd >= 0 ? text.Substring(firstLineEnd + 1) : "";
-            return delimiter;
-        }
-
-        private static char DetectBestDelimiter(string text) {
-            char[] candidates = { ',', ';', '\t', '|' };
-            char best = ',';
-            int bestScore = int.MinValue;
-
-            foreach (char delimiter in candidates) {
-                var rows = ParseDelimitedText(text, delimiter, maxRows: 20)
-                    .Where(r => r.Any(c => !string.IsNullOrWhiteSpace(c)))
-                    .ToList();
-
-                if (rows.Count == 0) continue;
-
-                var counts = rows.Select(r => r.Count).ToList();
-                int maxCols = counts.Max();
-                int rowsWithMultipleCols = counts.Count(c => c > 1);
-                int commonCols = counts
-                    .GroupBy(c => c)
-                    .OrderByDescending(g => g.Count())
-                    .ThenByDescending(g => g.Key)
-                    .First().Key;
-                int consistentRows = counts.Count(c => c == commonCols);
-
-                // Prefer delimiters that produce multiple consistent columns.
-                int score = rowsWithMultipleCols * 1000 + consistentRows * 100 + maxCols * 10;
-
-                // Slightly prefer TAB for clipboard TSV when it clearly creates columns.
-                if (delimiter == '\t' && rowsWithMultipleCols > 0) score += 25;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = delimiter;
-                }
-            }
-
-            return best;
-        }
-
-        private static List<List<string>> ParseDelimitedText(string text, char delimiter, int maxRows = int.MaxValue) {
-            var rows = new List<List<string>>();
-            var row = new List<string>();
-            var cell = new StringBuilder();
-            bool inQuotes = false;
-            bool atCellStart = true;
-
-            text = NormalizeCsvText(text);
-
-            for (int i = 0; i < text.Length; i++) {
-                char ch = text[i];
-
-                if (inQuotes) {
-                    if (ch == '"') {
-                        if (i + 1 < text.Length && text[i + 1] == '"') {
-                            cell.Append('"');
-                            i++;
-                        }
-                        else {
-                            inQuotes = false;
-                        }
-                    }
-                    else {
-                        cell.Append(ch);
-                    }
-                    continue;
-                }
-
-                if (ch == '"' && atCellStart) {
-                    inQuotes = true;
-                    atCellStart = false;
-                }
-                else if (ch == delimiter) {
-                    row.Add(cell.ToString());
-                    cell.Length = 0;
-                    atCellStart = true;
-                }
-                else if (ch == '\n') {
-                    row.Add(cell.ToString());
-                    cell.Length = 0;
-                    rows.Add(row);
-                    if (rows.Count >= maxRows) return rows;
-                    row = new List<string>();
-                    atCellStart = true;
-                }
-                else {
-                    cell.Append(ch);
-                    atCellStart = false;
-                }
-            }
-
-            row.Add(cell.ToString());
-            if (row.Count > 1 || row.Any(v => !string.IsNullOrEmpty(v))) rows.Add(row);
-            return rows;
-        }
-
-        private static List<CsvHeaderInfo> BuildCsvHeaderMap(List<string> rawHeaders) {
-            var result = new List<CsvHeaderInfo>();
-            var used = new Dictionary<string, int>(StringComparer.Ordinal);
-
-            for (int i = 0; i < rawHeaders.Count; i++) {
-                string header = NormalizeCsvHeader(rawHeaders[i]);
-                if (string.IsNullOrEmpty(header)) continue;
-
-                string unique = header;
-                if (used.TryGetValue(header, out int count)) {
-                    count++;
-                    used[header] = count;
-                    unique = $"{header}_{count}";
-                }
-                else {
-                    used[header] = 1;
-                }
-
-                result.Add(new CsvHeaderInfo { SourceIndex = i, Name = unique });
-            }
-
-            return result;
-        }
-
-        private static string NormalizeCsvHeader(string header) {
-            header = (header ?? "").Trim().TrimStart('\ufeff');
-            if (header.StartsWith("\"") && header.EndsWith("\"") && header.Length >= 2)
-                header = header.Substring(1, header.Length - 2).Replace("\"\"", "\"");
-            return header.Trim();
-        }
-
-        private static string DelimiterLabel(char delimiter) {
-            return delimiter switch
+        private void AskAddColumn(JArray arr)
+        {
+            StringInputWindow.Open("Add Field", "Field name", "id", delegate(string name)
             {
-                ',' => "comma (,)",
-                ';' => "semicolon (;)",
-                '\t' => "tab",
-                '|' => "pipe (|)",
-                _ => delimiter.ToString()
-            };
+                AddColumn(arr, name);
+            });
         }
 
-        private static string ReadTextBestEffort(string filePath) {
-            byte[] bytes = File.ReadAllBytes(filePath);
+        private void AddColumn(JArray arr, string key)
+        {
+            key = (key ?? "").Trim();
+            if (key.Length == 0) return;
 
-            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-                return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
-
-            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-                return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
-
-            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-                return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
-
-            try {
-                return new UTF8Encoding(false, true).GetString(bytes);
+            if (arr.Count == 0)
+            {
+                JObject obj = new JObject();
+                obj[key] = "";
+                arr.Add(obj);
             }
-            catch {
-                return Encoding.Default.GetString(bytes);
-            }
-        }
-
-        private static Dictionary<string, JToken> BuildColumnSamples(JArray arr, List<string> headers) {
-            var result = new Dictionary<string, JToken>(StringComparer.Ordinal);
-            foreach (string h in headers) {
-                foreach (var row in arr.OfType<JObject>()) {
-                    if (row.TryGetValue(h, out var sample) && sample != null && sample.Type != JTokenType.Null) {
-                        result[h] = sample;
-                        break;
+            else
+            {
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    JObject obj = arr[i] as JObject;
+                    if (obj == null)
+                    {
+                        obj = new JObject();
+                        obj["value"] = arr[i] == null ? JValue.CreateNull() : arr[i].DeepClone();
+                        arr[i] = obj;
                     }
+
+                    if (obj.Property(key) == null)
+                        obj[key] = "";
                 }
             }
+
+            OnTokenChanged();
+        }
+
+        private void InsertEmptyRow(JArray arr, string path, int index)
+        {
+            index = Mathf.Clamp(index, 0, arr.Count);
+            arr.Insert(index, CreateEmptyRowLike(arr));
+            SelectRow(path, index);
+            OnTokenChanged();
+        }
+
+        private void DuplicateRow(JArray arr, string path, int index)
+        {
+            if (index < 0 || index >= arr.Count) return;
+            arr.Insert(index + 1, arr[index].DeepClone());
+            SelectRow(path, index + 1);
+            OnTokenChanged();
+        }
+
+        private void DeleteRow(JArray arr, int index)
+        {
+            if (index < 0 || index >= arr.Count) return;
+            arr.RemoveAt(index);
+            selectedRowIndex = Mathf.Clamp(index, 0, arr.Count - 1);
+            OnTokenChanged();
+        }
+
+        private void CopyRow(JArray arr, int index)
+        {
+            if (index < 0 || index >= arr.Count) return;
+            copiedRow = arr[index].DeepClone();
+            copiedRowText = copiedRow.ToString(Formatting.None);
+            EditorGUIUtility.systemCopyBuffer = copiedRow.ToString(Formatting.Indented);
+            SetStatus("Row copied.", MessageType.Info);
+        }
+
+        private void PasteRow(JArray arr, string path, int index)
+        {
+            TryReadClipboardRow();
+            if (copiedRow == null)
+            {
+                SetStatus("Clipboard does not contain JSON row data.", MessageType.Warning);
+                return;
+            }
+
+            index = Mathf.Clamp(index, 0, arr.Count);
+
+            if (copiedRow is JArray many)
+            {
+                foreach (JToken item in many)
+                {
+                    arr.Insert(index, item.DeepClone());
+                    index++;
+                }
+                SelectRow(path, index - 1);
+            }
+            else
+            {
+                arr.Insert(index, copiedRow.DeepClone());
+                SelectRow(path, index);
+            }
+
+            OnTokenChanged();
+            GUIUtility.ExitGUI();
+        }
+
+        private void TryReadClipboardRow()
+        {
+            string text = EditorGUIUtility.systemCopyBuffer;
+            if (string.IsNullOrWhiteSpace(text) || text == copiedRowText) return;
+
+            try
+            {
+                copiedRow = JToken.Parse(text);
+                copiedRowText = copiedRow.ToString(Formatting.None);
+            }
+            catch
+            {
+                // Keep current clipboard token.
+            }
+        }
+
+        private void MoveSelectedRowTo(JArray arr, int target)
+        {
+            if (selectedRowIndex < 0) return;
+            MoveRowTo(arr, selectedRowIndex, target);
+        }
+
+        private void MoveRowTo(JArray arr, int from, int target)
+        {
+            if (from < 0 || from >= arr.Count) return;
+            target = Mathf.Clamp(target, 0, arr.Count);
+
+            int insert = target;
+            if (insert > from) insert--;
+            if (insert == from) return;
+
+            JToken item = arr[from];
+            arr.RemoveAt(from);
+            insert = Mathf.Clamp(insert, 0, arr.Count);
+            arr.Insert(insert, item);
+            selectedRowIndex = insert;
+            OnTokenChanged();
+        }
+
+        private void SelectRow(string path, int row)
+        {
+            selectedTablePath = path;
+            selectedRowIndex = row;
+        }
+
+        private void SetCell(JArray arr, int row, string key, JToken value)
+        {
+            if (row < 0 || row >= arr.Count) return;
+
+            if (key == "value" && !(arr[row] is JObject))
+            {
+                arr[row] = value ?? JValue.CreateNull();
+            }
+            else
+            {
+                JObject obj = arr[row] as JObject;
+                if (obj == null)
+                {
+                    obj = new JObject();
+                    arr[row] = obj;
+                }
+                obj[key] = value ?? JValue.CreateNull();
+            }
+
+            OnTokenChanged();
+        }
+
+        private void FillDown(JArray arr, int startRow, string key, JToken value)
+        {
+            for (int i = startRow + 1; i < arr.Count; i++)
+                SetCellNoNotify(arr, i, key, value == null ? JValue.CreateNull() : value.DeepClone());
+
+            OnTokenChanged();
+        }
+
+        private void FillEmpty(JArray arr, string key, JToken value)
+        {
+            for (int i = 0; i < arr.Count; i++)
+            {
+                JToken current = GetCell(arr[i], key);
+                if (IsEmpty(current))
+                    SetCellNoNotify(arr, i, key, value == null ? JValue.CreateNull() : value.DeepClone());
+            }
+
+            OnTokenChanged();
+        }
+
+        private void SetCellNoNotify(JArray arr, int row, string key, JToken value)
+        {
+            if (key == "value" && !(arr[row] is JObject))
+            {
+                arr[row] = value;
+                return;
+            }
+
+            JObject obj = arr[row] as JObject;
+            if (obj == null)
+            {
+                obj = new JObject();
+                arr[row] = obj;
+            }
+            obj[key] = value;
+        }
+
+        private void RenameColumn(JArray arr, string oldKey, string newKey)
+        {
+            newKey = (newKey ?? "").Trim();
+            if (newKey.Length == 0 || newKey == oldKey) return;
+
+            foreach (JObject obj in arr.OfType<JObject>())
+            {
+                JProperty prop = obj.Property(oldKey);
+                if (prop == null) continue;
+
+                JToken value = prop.Value.DeepClone();
+                prop.Remove();
+                obj[newKey] = value;
+            }
+
+            OnTokenChanged();
+        }
+
+        private void DeleteColumn(JArray arr, string key)
+        {
+            foreach (JObject obj in arr.OfType<JObject>())
+                obj.Remove(key);
+
+            OnTokenChanged();
+        }
+
+        private void SetAll(JArray arr, string key, string raw)
+        {
+            JToken sample = FindSample(arr, key);
+            JToken value = ParseCell(raw, sample);
+            for (int i = 0; i < arr.Count; i++)
+                SetCellNoNotify(arr, i, key, value.DeepClone());
+
+            OnTokenChanged();
+        }
+
+        private void SortByColumn(JArray arr, string key, bool asc)
+        {
+            List<JToken> rows = arr.Select(x => x.DeepClone()).ToList();
+            rows.Sort((a, b) => CompareCell(GetCell(a, key), GetCell(b, key)));
+            if (!asc) rows.Reverse();
+
+            arr.Clear();
+            foreach (JToken row in rows)
+                arr.Add(row);
+
+            OnTokenChanged();
+        }
+
+        private int CompareCell(JToken a, JToken b)
+        {
+            bool ea = IsEmpty(a);
+            bool eb = IsEmpty(b);
+            if (ea || eb)
+            {
+                if (ea && eb) return 0;
+                return ea ? 1 : -1;
+            }
+
+            if (TryDouble(a, out double da) && TryDouble(b, out double db))
+                return da.CompareTo(db);
+
+            return string.Compare(TokenToText(a), TokenToText(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void CopyColumnText(JArray arr, string key)
+        {
+            EditorGUIUtility.systemCopyBuffer = string.Join("\n", arr.Select(row => TokenToText(GetCell(row, key))));
+            SetStatus("Column copied.", MessageType.Info);
+        }
+
+        private void CopyColumnJson(JArray arr, string key)
+        {
+            JArray values = new JArray();
+            foreach (JToken row in arr)
+                values.Add(GetCell(row, key).DeepClone());
+
+            EditorGUIUtility.systemCopyBuffer = values.ToString(Formatting.Indented);
+            SetStatus("Column JSON copied.", MessageType.Info);
+        }
+
+        private void CopyTsv(JArray arr, List<string> columns, List<int> rows)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine(string.Join("\t", columns));
+
+            foreach (int rowIndex in rows)
+            {
+                List<string> cells = new List<string>();
+                foreach (string col in columns)
+                    cells.Add(EscapeTsv(TokenToText(GetCell(arr[rowIndex], col))));
+                sb.AppendLine(string.Join("\t", cells));
+            }
+
+            EditorGUIUtility.systemCopyBuffer = sb.ToString();
+            SetStatus("TSV copied.", MessageType.Info);
+        }
+
+        private void PasteTsv(JArray arr, bool replace)
+        {
+            string tsv = EditorGUIUtility.systemCopyBuffer;
+            if (string.IsNullOrWhiteSpace(tsv))
+            {
+                SetStatus("Clipboard is empty.", MessageType.Warning);
+                return;
+            }
+
+            List<JObject> rows = ParseTsv(tsv, arr);
+            if (rows.Count == 0)
+            {
+                SetStatus("Clipboard does not contain table rows.", MessageType.Warning);
+                return;
+            }
+
+            if (replace)
+                arr.Clear();
+
+            foreach (JObject row in rows)
+                arr.Add(row);
+
+            OnTokenChanged();
+        }
+
+        private List<JObject> ParseTsv(string tsv, JArray sampleArray)
+        {
+            List<JObject> result = new List<JObject>();
+            string[] lines = tsv.Replace("\r\n", "\n").Replace('\r', '\n').Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length == 0) return result;
+
+            string[] headers = lines[0].Split('\t').Select(h => h.Trim()).ToArray();
+
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string[] cells = lines[i].Split('\t');
+                JObject row = new JObject();
+                for (int c = 0; c < headers.Length && c < cells.Length; c++)
+                {
+                    string key = headers[c];
+                    if (string.IsNullOrWhiteSpace(key)) continue;
+                    row[key] = ParseCell(UnescapeTsv(cells[c]), FindSample(sampleArray, key));
+                }
+                result.Add(row);
+            }
+
             return result;
         }
 
-        private static JToken CsvCellToToken(string cell, JToken sample) {
-            cell ??= "";
-            string trim = cell.Trim();
+        private void HandleRowDrag(JArray arr, string path, List<int> visibleRows, int visualIndex, int realIndex, Rect dragRect)
+        {
+            EditorGUIUtility.AddCursorRect(dragRect, MouseCursor.Pan);
+            Event e = Event.current;
 
-            if ((trim.StartsWith("{") && trim.EndsWith("}")) || (trim.StartsWith("[") && trim.EndsWith("]"))) {
-                try { return JToken.Parse(trim); }
-                catch { /* keep as scalar */ }
-            }
-
-            if (sample != null) return SmartParseScalar(cell, sample);
-            return SmartParseScalar(cell, null);
-        }
-
-        private static string GuessBestKeyName(JArray arr) {
-            var keys = CollectObjectKeys(arr);
-            foreach (string k in new[] { "id", "ID", "Id", "key", "Key", "name", "Name", "configName", "ConfigName", "productId", "ProductId" })
-                if (keys.Contains(k)) return k;
-            return keys.FirstOrDefault() ?? "id";
-        }
-
-        private static string PathToSafeName(string path) {
-            return (path ?? "table").Replace("root.", "").Replace('.', '_').Replace('/', '_').Replace('\\', '_');
-        }
-
-        private static string SanitizeFileName(string name) {
-            foreach (char c in Path.GetInvalidFileNameChars())
-                name = name.Replace(c, '_');
-            return string.IsNullOrWhiteSpace(name) ? "export.csv" : name;
-        }
-
-        // ── Visual editing extras ─────────────────────────────────
-        private void HandleRowDrag(JArray arr, string path, List<int> visibleRows, int visualIndex, int realIndex, Rect dragR) {
-            EditorGUIUtility.AddCursorRect(dragR, MouseCursor.Pan);
-
-            var e = Event.current;
-            if (e.type == EventType.MouseDown && e.button == 0 && dragR.Contains(e.mousePosition)) {
-                _dragTablePath = path;
-                _dragRowIndex = realIndex;
-                _dragDropVisualIndex = visualIndex;
-                _dragMouseStart = e.mousePosition;
-                _dragLabel = GetRowDisplayName(arr[realIndex], realIndex);
-                _isDraggingRow = false;
-                GUI.FocusControl(null);
+            if (e.type == EventType.MouseDown && e.button == 0 && dragRect.Contains(e.mousePosition))
+            {
+                draggingTablePath = path;
+                draggingRowIndex = realIndex;
+                dragTargetVisualIndex = visualIndex;
+                dragStartMouse = e.mousePosition;
+                isDraggingRow = false;
                 e.Use();
                 return;
             }
 
-            if (_dragTablePath != path || _dragRowIndex != realIndex) return;
+            if (draggingTablePath != path || draggingRowIndex != realIndex) return;
 
-            if (e.type == EventType.MouseDrag) {
-                if (!_isDraggingRow && Vector2.Distance(_dragMouseStart, e.mousePosition) >= DragStartDistance)
-                    _isDraggingRow = true;
+            if (e.type == EventType.MouseDrag)
+            {
+                if (!isDraggingRow && Vector2.Distance(dragStartMouse, e.mousePosition) >= 4f)
+                    isDraggingRow = true;
 
-                if (_isDraggingRow) {
-                    _dragDropVisualIndex = Mathf.Clamp(Mathf.RoundToInt(e.mousePosition.y / (CellH + 1)), 0, visibleRows.Count);
-                    Repaint();
+                if (isDraggingRow)
+                {
+                    dragTargetVisualIndex = Mathf.Clamp(Mathf.RoundToInt(e.mousePosition.y / (RowHeight + 1)), 0, visibleRows.Count);
                     e.Use();
+                    Repaint();
                 }
             }
         }
 
-        private void DrawRowDropMarker(string path, float width, int visibleRowCount) {
-            if (_dragTablePath != path || !_isDraggingRow || _dragDropVisualIndex < 0) return;
+        private void DrawDropMarker(string path, float width, int visibleCount)
+        {
+            if (draggingTablePath != path || !isDraggingRow) return;
 
-            float y = Mathf.Clamp(_dragDropVisualIndex, 0, visibleRowCount) * (CellH + 1);
-            EditorGUI.DrawRect(new Rect(0, y - 2, width, 3), new Color(0.45f, 0.72f, 1f, 1f));
-            GUI.Label(new Rect(8, Mathf.Max(0, y - 22), Mathf.Min(width - 16, 360), 20),
-                $"Drop: {_dragLabel}", new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.75f, 0.9f, 1f) } });
+            float y = Mathf.Clamp(dragTargetVisualIndex, 0, visibleCount) * (RowHeight + 1);
+            EditorGUI.DrawRect(new Rect(0, y - 2, width, 3), new Color(0.45f, 0.72f, 1f));
         }
 
-        private void HandleRowDragDropMouseUp(JArray arr, string path, List<int> visibleRows) {
-            var e = Event.current;
-            if (_dragTablePath != path || e.type != EventType.MouseUp) return;
+        private void HandleDragMouseUp(JArray arr, string path, List<int> visibleRows)
+        {
+            Event e = Event.current;
+            if (draggingTablePath != path || e.type != EventType.MouseUp) return;
 
-            if (_isDraggingRow && _dragRowIndex >= 0 && _dragRowIndex < arr.Count) {
-                int insertVisual = Mathf.Clamp(_dragDropVisualIndex, 0, visibleRows.Count);
-                int targetIndex = insertVisual >= visibleRows.Count ? arr.Count : visibleRows[insertVisual];
+            if (isDraggingRow && draggingRowIndex >= 0 && draggingRowIndex < arr.Count)
+            {
+                int visualTarget = Mathf.Clamp(dragTargetVisualIndex, 0, visibleRows.Count);
+                int target = visualTarget >= visibleRows.Count ? arr.Count : visibleRows[visualTarget];
 
-                // IMPORTANT: only queue the move here.
-                // Applying arr.RemoveAt/Insert before GUI.EndScrollView can break Unity IMGUI layout.
-                _pendingMoveTablePath = path;
-                _pendingMoveFromIndex = _dragRowIndex;
-                _pendingMoveTargetIndex = targetIndex;
+                pendingMoveTable = path;
+                pendingMoveFrom = draggingRowIndex;
+                pendingMoveTarget = target;
             }
 
-            _dragTablePath = "";
-            _dragRowIndex = -1;
-            _dragDropVisualIndex = -1;
-            _isDraggingRow = false;
-            _dragLabel = "";
+            draggingTablePath = "";
+            draggingRowIndex = -1;
+            dragTargetVisualIndex = -1;
+            isDraggingRow = false;
             e.Use();
         }
 
-        private void MoveRowToIndex(JArray arr, int fromIndex, int targetIndex) {
-            if (arr == null || fromIndex < 0 || fromIndex >= arr.Count) return;
-
-            targetIndex = Mathf.Clamp(targetIndex, 0, arr.Count);
-            int insertIndex = targetIndex;
-            if (insertIndex > fromIndex) insertIndex--;
-
-            if (insertIndex == fromIndex) return;
-
-            var token = arr[fromIndex];
-            arr.RemoveAt(fromIndex);
-            insertIndex = Mathf.Clamp(insertIndex, 0, arr.Count);
-            arr.Insert(insertIndex, token);
-
-            _selRowIndex = insertIndex;
-            OnTokenChanged();
-            SetStatus($"↕ Moved row {fromIndex + 1} to {insertIndex + 1}.", MessageType.Info);
-        }
-
-        private void MoveSelectedRowToSpecificOrder(string input) {
-            if (!int.TryParse((input ?? "").Trim(), out int oneBased)) {
-                SetStatus("❌ Invalid row number.", MessageType.Error);
-                return;
-            }
-
-            MoveSelectedRowToIndex(oneBased - 1);
-        }
-
-        private void MoveSelectedRowToIndex(int targetZeroBased) {
-            var arr = GetSelectedArray();
-            if (arr == null || _selRowIndex < 0) return;
-            MoveRowToIndex(arr, _selRowIndex, Mathf.Clamp(targetZeroBased, 0, arr.Count));
-        }
-
-        private static JObject CreateEmptyRowLike(JArray arr, int sampleIndex) {
-            if (arr == null || arr.Count == 0) return new JObject();
-            sampleIndex = Mathf.Clamp(sampleIndex, 0, arr.Count - 1);
-            if (arr[sampleIndex] is not JObject sample) return new JObject();
-
-            var obj = new JObject();
-            foreach (var p in sample.Properties())
-                obj[p.Name] = CreateDefaultValueForToken(p.Value);
-            return obj;
-        }
-
-        private static string GetRowDisplayName(JToken rowToken, int index) {
-            if (rowToken is JObject row) {
-                foreach (var key in new[] { "id", "ID", "Id", "name", "Name", "key", "Key", "configName", "ConfigName", "productId", "ProductId" }) {
-                    if (row.TryGetValue(key, out var v) && v != null && v.Type != JTokenType.Null) {
-                        string s = ScalarToDisplayString(v);
-                        if (!string.IsNullOrWhiteSpace(s))
-                            return $"#{index + 1}  {key}: {s}";
-                    }
-                }
-            }
-
-            return $"Row {index + 1}";
-        }
-
-        private void ShowCellContextMenu(JArray arr, List<int> visibleRows, int ri, string key, JToken value) {
-            var menu = new GenericMenu();
-
-            menu.AddItem(new GUIContent("Copy Cell/JSON"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = value?.ToString(Formatting.None) ?? "null";
-                SetStatus("📋 Cell JSON copied.", MessageType.Info);
-            });
-
-            menu.AddItem(new GUIContent("Copy Cell/Raw Text"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = ScalarToDisplayString(value);
-                SetStatus("📋 Cell text copied.", MessageType.Info);
-            });
-
-            menu.AddItem(new GUIContent("Paste Cell"), false, () => {
-                if (arr[ri] is JObject row) {
-                    row[key] = SmartParseScalar(EditorGUIUtility.systemCopyBuffer, value);
-                    OnTokenChanged();
-                }
-            });
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Edit Cell As JSON..."), false, () => {
-                JsonTokenEditWindow.Open(value ?? JValue.CreateNull(), edited => {
-                    if (arr[ri] is JObject row) {
-                        row[key] = edited;
-                        OnTokenChanged();
-                    }
-                });
-            });
-
-            menu.AddItem(new GUIContent("Set Cell/null"), false, () => {
-                if (arr[ri] is JObject row) { row[key] = JValue.CreateNull(); OnTokenChanged(); }
-            });
-            menu.AddItem(new GUIContent("Set Cell/true"), false, () => {
-                if (arr[ri] is JObject row) { row[key] = true; OnTokenChanged(); }
-            });
-            menu.AddItem(new GUIContent("Set Cell/false"), false, () => {
-                if (arr[ri] is JObject row) { row[key] = false; OnTokenChanged(); }
-            });
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Fill Down From This Cell"), false, () => {
-                bool start = false;
-                foreach (int idx in visibleRows) {
-                    if (idx == ri) { start = true; continue; }
-                    if (!start) continue;
-                    if (arr[idx] is JObject row) row[key] = value?.DeepClone() ?? JValue.CreateNull();
-                }
-                OnTokenChanged();
-            });
-
-            menu.AddItem(new GUIContent("Fill Empty In This Column"), false, () => {
-                foreach (int idx in visibleRows) {
-                    if (arr[idx] is not JObject row) continue;
-                    if (!row.TryGetValue(key, out var cur) || cur == null || cur.Type == JTokenType.Null ||
-                        (cur.Type == JTokenType.String && string.IsNullOrWhiteSpace(cur.Value<string>())))
-                        row[key] = value?.DeepClone() ?? JValue.CreateNull();
-                }
-                OnTokenChanged();
-            });
-
-            menu.AddItem(new GUIContent("Copy/Current Config Name"), false, CopyCurrentConfigName);
-            menu.ShowAsContext();
-        }
-
-        private void ShowSortMenu(string path, JArray arr, List<int> visibleRowIndices, List<string> keys) {
-            var menu = new GenericMenu();
-
-            if (keys == null || keys.Count == 0) {
-                menu.AddDisabledItem(new GUIContent("No fields found"));
-                menu.ShowAsContext();
-                return;
-            }
-
-            // Common game-config fields appear first for faster access.
-            string[] preferred = { "id", "order", "sortOrder", "index", "level", "name", "type", "price", "value", "amount", "unlockLevel", "productId" };
-            var quickKeys = preferred.Where(k => keys.Contains(k)).Concat(keys.Where(k => !preferred.Contains(k))).ToList();
-
-            foreach (string k in quickKeys) {
-                string key = k;
-                menu.AddItem(new GUIContent($"Quick Sort All Rows/{key}/Auto Ascending"), false,
-                    () => SortRowsByColumn(path, arr, key, true, SortValueMode.Auto));
-                menu.AddItem(new GUIContent($"Quick Sort All Rows/{key}/Auto Descending"), false,
-                    () => SortRowsByColumn(path, arr, key, false, SortValueMode.Auto));
-            }
-
-            menu.AddSeparator("");
-
-            bool hasFilteredRows = visibleRowIndices != null && visibleRowIndices.Count > 0 && visibleRowIndices.Count < arr.Count;
-            if (hasFilteredRows) {
-                foreach (string k in quickKeys) {
-                    string key = k;
-                    menu.AddItem(new GUIContent($"Sort Visible Filtered Rows Only/{key}/Auto Ascending"), false,
-                        () => SortRowsByColumn(path, arr, key, true, SortValueMode.Auto, visibleRowIndices));
-                    menu.AddItem(new GUIContent($"Sort Visible Filtered Rows Only/{key}/Auto Descending"), false,
-                        () => SortRowsByColumn(path, arr, key, false, SortValueMode.Auto, visibleRowIndices));
-                }
-            }
-            else {
-                menu.AddDisabledItem(new GUIContent("Sort Visible Filtered Rows Only/No filter is active"));
-            }
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Advanced Multi-field Sort..."), false, () => {
-                var initialRules = _lastSortRules.TryGetValue(path, out var saved) && saved.Count > 0
-                    ? saved.Select(r => r.Clone()).ToList()
-                    : new List<SortRule> { new SortRule { Key = keys[0], Ascending = true, Mode = SortValueMode.Auto, EmptyLast = true } };
-
-                MultiFieldSortWindow.Open(keys, initialRules, hasFilteredRows,
-                    rules => SortRowsByFields(path, arr, rules, null),
-                    rules => SortRowsByFields(path, arr, rules, visibleRowIndices));
-            });
-
-            menu.AddItem(new GUIContent("Sort By Expression/All Rows..."), false, () => {
-                string initial = _lastSortRules.TryGetValue(path, out var saved) && saved.Count > 0
-                    ? BuildSortExpression(saved)
-                    : GuessSortExpression(keys);
-                StringInputWindow.Open("Sort By Fields", "Example: id asc, level desc, price number asc", initial,
-                    expr => ApplySortExpression(path, arr, visibleRowIndices, expr, false));
-            });
-
-            if (hasFilteredRows) {
-                menu.AddItem(new GUIContent("Sort By Expression/Visible Filtered Rows Only..."), false, () => {
-                    string initial = _lastSortRules.TryGetValue(path, out var saved) && saved.Count > 0
-                        ? BuildSortExpression(saved)
-                        : GuessSortExpression(keys);
-                    StringInputWindow.Open("Sort Visible Rows", "Example: rarity asc, level number desc", initial,
-                        expr => ApplySortExpression(path, arr, visibleRowIndices, expr, true));
-                });
-            }
-            else {
-                menu.AddDisabledItem(new GUIContent("Sort By Expression/Visible Filtered Rows Only..."));
-            }
-
-            menu.AddSeparator("");
-
-            if (_lastSortRules.TryGetValue(path, out var lastRules) && lastRules.Count > 0) {
-                menu.AddItem(new GUIContent("Re-apply Last Sort/All Rows"), false,
-                    () => SortRowsByFields(path, arr, lastRules.Select(r => r.Clone()).ToList(), null));
-                if (hasFilteredRows)
-                    menu.AddItem(new GUIContent("Re-apply Last Sort/Visible Filtered Rows Only"), false,
-                        () => SortRowsByFields(path, arr, lastRules.Select(r => r.Clone()).ToList(), visibleRowIndices));
-                else
-                    menu.AddDisabledItem(new GUIContent("Re-apply Last Sort/Visible Filtered Rows Only"));
-
-                menu.AddItem(new GUIContent("Copy Last Sort Expression"), false, () => {
-                    EditorGUIUtility.systemCopyBuffer = BuildSortExpression(lastRules);
-                    SetStatus("📋 Sort expression copied.", MessageType.Info);
-                });
-            }
-            else {
-                menu.AddDisabledItem(new GUIContent("Re-apply Last Sort/No last sort"));
-                menu.AddDisabledItem(new GUIContent("Copy Last Sort Expression"));
-            }
-
-            menu.AddSeparator("");
-            menu.AddDisabledItem(new GUIContent("Expression syntax: field asc, level number desc, name text asc"));
-            menu.AddDisabledItem(new GUIContent("Tip: empty/null values stay at the bottom by default."));
-            menu.ShowAsContext();
-        }
-
-        private void ApplySortExpression(string path, JArray arr, List<int> visibleRowIndices, string expression, bool visibleOnly) {
-            var rules = ParseSortExpression(expression);
-            if (rules.Count == 0) {
-                SetStatus("❌ Sort expression is empty or invalid.", MessageType.Error);
-                return;
-            }
-
-            SortRowsByFields(path, arr, rules, visibleOnly ? visibleRowIndices : null);
-        }
-
-        private List<SortRule> ParseSortExpression(string expression) {
-            var rules = new List<SortRule>();
-            if (string.IsNullOrWhiteSpace(expression)) return rules;
-
-            foreach (string rawPart in expression.Split(',')) {
-                string part = (rawPart ?? "").Trim();
-                if (string.IsNullOrEmpty(part)) continue;
-
-                bool ascending = true;
-                if (part.StartsWith("-")) { ascending = false; part = part.Substring(1).Trim(); }
-                else if (part.StartsWith("+")) { ascending = true; part = part.Substring(1).Trim(); }
-
-                var tokens = part.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-                if (tokens.Count == 0) continue;
-
-                string key = tokens[0].Trim();
-                var mode = SortValueMode.Auto;
-                bool emptyLast = true;
-
-                for (int i = 1; i < tokens.Count; i++) {
-                    string t = tokens[i].Trim().ToLowerInvariant();
-                    if (t == "asc" || t == "ascending" || t == "a-z" || t == "az") ascending = true;
-                    else if (t == "desc" || t == "descending" || t == "z-a" || t == "za") ascending = false;
-                    else if (t == "number" || t == "numeric" || t == "num") mode = SortValueMode.Number;
-                    else if (t == "text" || t == "string" || t == "str") mode = SortValueMode.Text;
-                    else if (t == "bool" || t == "boolean") mode = SortValueMode.Boolean;
-                    else if (t == "date" || t == "datetime" || t == "time") mode = SortValueMode.Date;
-                    else if (t == "emptyfirst" || t == "nullfirst") emptyLast = false;
-                    else if (t == "emptylast" || t == "nulllast") emptyLast = true;
-                }
-
-                rules.Add(new SortRule { Key = key, Ascending = ascending, Mode = mode, EmptyLast = emptyLast });
-            }
-
-            return rules;
-        }
-
-        private void SortRowsByColumn(string path, JArray arr, string key, bool ascending, SortValueMode mode, List<int> affectedIndices = null) {
-            SortRowsByFields(path, arr,
-                new List<SortRule> { new SortRule { Key = key, Ascending = ascending, Mode = mode, EmptyLast = true } },
-                affectedIndices);
-        }
-
-        private void SortRowsByFields(string path, JArray arr, List<SortRule> rules, List<int> affectedIndices) {
-            if (arr == null || rules == null || rules.Count == 0) return;
-            rules = rules.Where(r => r != null && !string.IsNullOrWhiteSpace(r.Key)).Select(r => r.Clone()).ToList();
-            if (rules.Count == 0) return;
-
-            bool visibleOnly = affectedIndices != null && affectedIndices.Count > 0 && affectedIndices.Count < arr.Count;
-
-            if (visibleOnly) {
-                var cleanIndices = affectedIndices.Where(i => i >= 0 && i < arr.Count).Distinct().OrderBy(i => i).ToList();
-                var sorted = cleanIndices.Select(i => arr[i].DeepClone()).ToList();
-                sorted.Sort((a, b) => CompareRowsByRules(a, b, rules));
-
-                for (int i = 0; i < cleanIndices.Count; i++)
-                    arr[cleanIndices[i]] = sorted[i];
-            }
-            else {
-                var sorted = arr.Select(t => t.DeepClone()).ToList();
-                sorted.Sort((a, b) => CompareRowsByRules(a, b, rules));
-                arr.Clear();
-                foreach (var tok in sorted) arr.Add(tok);
-            }
-
-            _lastSortRules[path] = rules.Select(r => r.Clone()).ToList();
-            _lastSortLabels[path] = BuildSortLabel(rules) + (visibleOnly ? " (visible only)" : "");
-            OnTokenChanged();
-            SetStatus($"↕ Sorted {(visibleOnly ? "visible rows" : "all rows")} by {BuildSortLabel(rules)}.", MessageType.Info);
-        }
-
-        private static int CompareRowsByRules(JToken a, JToken b, List<SortRule> rules) {
-            foreach (var rule in rules) {
-                int cmp = CompareSortValues(GetColumnValue(a, rule.Key), GetColumnValue(b, rule.Key), rule.Mode, rule.EmptyLast, rule.Ascending);
-                if (cmp != 0) return cmp;
-            }
-            return 0;
-        }
-
-        private static JToken GetColumnValue(JToken row, string key) {
-            return row is JObject obj && obj.TryGetValue(key, out var v) ? v : JValue.CreateNull();
-        }
-
-        private static int CompareSortValues(JToken a, JToken b, SortValueMode mode, bool emptyLast, bool ascending) {
-            bool ea = IsSortEmpty(a);
-            bool eb = IsSortEmpty(b);
-            if (ea || eb) {
-                if (ea && eb) return 0;
-                int emptyCmp = ea ? (emptyLast ? 1 : -1) : (emptyLast ? -1 : 1);
-                return emptyCmp;
-            }
-
-            int cmp;
-            switch (mode) {
-                case SortValueMode.Number:
-                    cmp = CompareAsNumber(a, b);
-                    break;
-                case SortValueMode.Boolean:
-                    cmp = CompareAsBoolean(a, b);
-                    break;
-                case SortValueMode.Date:
-                    cmp = CompareAsDate(a, b);
-                    break;
-                case SortValueMode.Text:
-                    cmp = CompareAsText(a, b);
-                    break;
-                default:
-                    cmp = CompareAuto(a, b);
-                    break;
-            }
-
-            return ascending ? cmp : -cmp;
-        }
-
-        private static bool IsSortEmpty(JToken tok) {
-            if (tok == null) return true;
-            if (tok.Type == JTokenType.Null || tok.Type == JTokenType.Undefined) return true;
-            return tok.Type == JTokenType.String && string.IsNullOrWhiteSpace(tok.Value<string>());
-        }
-
-        private static int CompareAuto(JToken a, JToken b) {
-            if (TryTokenToDouble(a, out double da) && TryTokenToDouble(b, out double db)) return da.CompareTo(db);
-            if (TryTokenToBool(a, out bool ba) && TryTokenToBool(b, out bool bb)) return ba.CompareTo(bb);
-            if (TryTokenToDateTime(a, out DateTime ta) && TryTokenToDateTime(b, out DateTime tb)) return ta.CompareTo(tb);
-            return CompareAsText(a, b);
-        }
-
-        private static int CompareAsNumber(JToken a, JToken b) {
-            bool okA = TryTokenToDouble(a, out double da);
-            bool okB = TryTokenToDouble(b, out double db);
-            if (okA && okB) return da.CompareTo(db);
-            if (okA != okB) return okA ? -1 : 1;
-            return CompareAsText(a, b);
-        }
-
-        private static int CompareAsBoolean(JToken a, JToken b) {
-            bool okA = TryTokenToBool(a, out bool ba);
-            bool okB = TryTokenToBool(b, out bool bb);
-            if (okA && okB) return ba.CompareTo(bb);
-            if (okA != okB) return okA ? -1 : 1;
-            return CompareAsText(a, b);
-        }
-
-        private static int CompareAsDate(JToken a, JToken b) {
-            bool okA = TryTokenToDateTime(a, out DateTime da);
-            bool okB = TryTokenToDateTime(b, out DateTime db);
-            if (okA && okB) return da.CompareTo(db);
-            if (okA != okB) return okA ? -1 : 1;
-            return CompareAsText(a, b);
-        }
-
-        private static int CompareAsText(JToken a, JToken b) {
-            return string.Compare(ScalarToDisplayString(a), ScalarToDisplayString(b), StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool TryTokenToDouble(JToken tok, out double value) {
-            value = 0;
-            if (tok == null) return false;
-            if (tok.Type == JTokenType.Integer || tok.Type == JTokenType.Float) {
-                try { value = tok.Value<double>(); return true; }
-                catch { return false; }
-            }
-            return double.TryParse(ScalarToDisplayString(tok), System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out value);
-        }
-
-        private static bool TryTokenToBool(JToken tok, out bool value) {
-            value = false;
-            if (tok == null) return false;
-            if (tok.Type == JTokenType.Boolean) { value = tok.Value<bool>(); return true; }
-            string s = ScalarToDisplayString(tok).Trim();
-            if (bool.TryParse(s, out value)) return true;
-            if (s == "0") { value = false; return true; }
-            if (s == "1") { value = true; return true; }
-            return false;
-        }
-
-        private static bool TryTokenToDateTime(JToken tok, out DateTime value) {
-            value = default(DateTime);
-            if (tok == null) return false;
-            return DateTime.TryParse(ScalarToDisplayString(tok), System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeLocal, out value);
-        }
-
-        private static string BuildSortLabel(List<SortRule> rules) {
-            if (rules == null || rules.Count == 0) return "";
-            return string.Join(", ", rules.Select(r => $"{r.Key} {(r.Ascending ? "ASC" : "DESC")} [{r.Mode}]"));
-        }
-
-        private static string BuildSortExpression(List<SortRule> rules) {
-            if (rules == null || rules.Count == 0) return "";
-            return string.Join(", ", rules.Select(r =>
-                $"{r.Key} {r.Mode.ToString().ToLowerInvariant()} {(r.Ascending ? "asc" : "desc")} {(r.EmptyLast ? "emptylast" : "emptyfirst")}"));
-        }
-
-        private static string GuessSortExpression(List<string> keys) {
-            if (keys == null || keys.Count == 0) return "";
-            foreach (string k in new[] { "order", "sortOrder", "id", "index", "level", "name" })
-                if (keys.Contains(k)) return k + " asc";
-            return keys[0] + " asc";
-        }
-
-        private static string TruncateMiddle(string s, int maxLen) {
-            if (string.IsNullOrEmpty(s) || s.Length <= maxLen) return s;
-            int left = Mathf.Max(1, maxLen / 2 - 1);
-            int right = Mathf.Max(1, maxLen - left - 1);
-            return s.Substring(0, left) + "…" + s.Substring(s.Length - right);
-        }
-
-        private void RenameColumn(JArray arr, string oldKey, string newKey) {
-            newKey = (newKey ?? "").Trim();
-            if (string.IsNullOrEmpty(newKey) || newKey == oldKey) return;
-
-            bool conflict = arr.OfType<JObject>().Any(o => o.Property(newKey) != null);
-            if (conflict && !EditorUtility.DisplayDialog("Rename Field",
-                    $"Field '{newKey}' already exists in some rows. Replace/merge values?", "Rename", "Cancel")) return;
-
-            foreach (var row in arr.OfType<JObject>()) {
-                var prop = row.Property(oldKey);
-                if (prop == null) continue;
-                JToken value = prop.Value.DeepClone();
-                prop.Remove();
-                row[newKey] = value;
-            }
-
-            var keysToMove = _columnWidths.Keys.Where(k => k.EndsWith("." + oldKey, StringComparison.Ordinal)).ToList();
-            foreach (var k in keysToMove) {
-                float w = _columnWidths[k];
-                _columnWidths.Remove(k);
-                _columnWidths[k.Substring(0, k.Length - oldKey.Length) + newKey] = w;
-            }
-
-            OnTokenChanged();
-            SetStatus($"Renamed '{oldKey}' to '{newKey}'.", MessageType.Info);
-        }
-
-        private void MoveColumn(JArray arr, string key, int delta) {
-            bool changed = false;
-            foreach (var row in arr.OfType<JObject>()) {
-                var props = row.Properties()
-                    .Select(p => new JProperty(p.Name, p.Value.DeepClone()))
-                    .ToList();
-                int from = props.FindIndex(p => p.Name == key);
-                if (from < 0) continue;
-                int to = Mathf.Clamp(from + delta, 0, props.Count - 1);
-                if (to == from) continue;
-
-                (props[from], props[to]) = (props[to], props[from]);
-                row.RemoveAll();
-                foreach (var p in props) row.Add(p);
-                changed = true;
-            }
-
-            if (changed) OnTokenChanged();
-        }
-
-        private void SetColumnAllValues(JArray arr, string key, string valueText) {
-            JToken sample = arr.OfType<JObject>().Select(o => o.TryGetValue(key, out var v) ? v : null).FirstOrDefault(v => v != null);
-            JToken parsed = SmartParseScalar(valueText, sample);
-            foreach (var row in arr.OfType<JObject>())
-                row[key] = parsed.DeepClone();
-
-            OnTokenChanged();
-            SetStatus($"Set all '{key}' values.", MessageType.Info);
-        }
-
-        private void FillEmptyColumnValues(JArray arr, string key, string valueText) {
-            JToken sample = arr.OfType<JObject>().Select(o => o.TryGetValue(key, out var v) ? v : null).FirstOrDefault(v => v != null);
-            JToken parsed = SmartParseScalar(valueText, sample);
-
-            int count = 0;
-            foreach (var row in arr.OfType<JObject>()) {
-                if (!row.TryGetValue(key, out var cur) || cur == null || cur.Type == JTokenType.Null ||
-                    (cur.Type == JTokenType.String && string.IsNullOrWhiteSpace(cur.Value<string>()))) {
-                    row[key] = parsed.DeepClone();
-                    count++;
-                }
-            }
-
-            OnTokenChanged();
-            SetStatus($"Filled {count} empty '{key}' value(s).", MessageType.Info);
-        }
-
-        // ── Table row operations ───────────────────────────────────
-        private JArray GetSelectedArray() {
-            if (string.IsNullOrEmpty(_selTablePath) || _selRowIndex < 0 || _rootToken == null) return null;
-            return FindArrayByPath(_rootToken, _selTablePath);
-        }
-
-        private JArray FindArrayByPath(JToken root, string path) {
-            if (path == "root") return root as JArray;
-            var parts = path.Split('.');
-            JToken cur = root;
-            foreach (var part in parts.Skip(1)) {
-                if (cur is JObject obj && obj.TryGetValue(part, out cur)) continue;
-                return null;
-            }
-
-            return cur as JArray;
-        }
-
-        private void CopySelectedRow() {
-            var arr = GetSelectedArray();
-            if (arr == null || _selRowIndex >= arr.Count) return;
-            if (arr[_selRowIndex] is JObject row) {
-                _clipboardRow = (JObject)row.DeepClone();
-                _clipboardJson = _clipboardRow.ToString(Formatting.None);
-                EditorGUIUtility.systemCopyBuffer = _clipboardJson;
-                SetStatus($"✂ Row {_selRowIndex + 1} copied.", MessageType.Info);
-            }
-        }
-
-        private void PasteRowBelow() {
-            TryRefreshClipboardFromSystem();
-            var arr = GetSelectedArray();
-            if (arr == null || _clipboardRow == null) return;
-            int at = _selRowIndex < 0 ? arr.Count : _selRowIndex + 1;
-            arr.Insert(at, (JObject)_clipboardRow.DeepClone());
-            _selRowIndex = at;
-            OnTokenChanged();
-        }
-
-        private void DuplicateSelectedRow() {
-            var arr = GetSelectedArray();
-            if (arr == null || _selRowIndex < 0 || _selRowIndex >= arr.Count) return;
-            if (arr[_selRowIndex] is JObject row) {
-                arr.Insert(_selRowIndex + 1, (JObject)row.DeepClone());
-                _selRowIndex++;
-                OnTokenChanged();
-            }
-        }
-
-        private void DeleteSelectedRow() {
-            var arr = GetSelectedArray();
-            if (arr == null || _selRowIndex < 0 || _selRowIndex >= arr.Count) return;
-            arr.RemoveAt(_selRowIndex);
-            if (_selRowIndex >= arr.Count) _selRowIndex = arr.Count - 1;
-            OnTokenChanged();
-        }
-
-        private void MoveSelectedRow(int delta) {
-            var arr = GetSelectedArray();
-            if (arr == null || _selRowIndex < 0) return;
-            int to = _selRowIndex + delta;
-            if (to < 0 || to >= arr.Count) return;
-            (arr[_selRowIndex], arr[to]) = (arr[to], arr[_selRowIndex]);
-            _selRowIndex = to;
-            OnTokenChanged();
-        }
-
-        private void ShiftSelection(int delta) {
-            var arr = GetSelectedArray();
-            if (arr == null) return;
-            int next = Mathf.Clamp(_selRowIndex + delta, 0, arr.Count - 1);
-            _selRowIndex = next;
-            Repaint();
-        }
-
-        private void ClearSelection() {
-            _selTablePath = "";
-            _selRowIndex = -1;
-            _selCellKey = "";
-            _selCellRowIndex = -1;
-            Repaint();
-        }
-
-        private void TryRefreshClipboardFromSystem() {
-            string sys = EditorGUIUtility.systemCopyBuffer;
-            if (string.IsNullOrWhiteSpace(sys) || sys == _clipboardJson) return;
-            try {
-                if (JToken.Parse(sys) is JObject obj) {
-                    _clipboardRow = obj;
-                    _clipboardJson = sys;
-                }
-            }
-            catch {
-                /* not a JSON object */
-            }
-        }
-
-        // ── Primitive array section ────────────────────────────────
-        private void DrawPrimitiveArraySection(JArray arr, string path, string label) {
-            bool collapsed = _collapsed.Contains(path);
-            var hdrR = GUILayoutUtility.GetRect(0, 26, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(hdrR, ClrSectionBg);
-
-            float bx = hdrR.x + 4, by = hdrR.y + 4;
-            if (GUI.Button(new Rect(bx, by, 18, 18), collapsed ? "▶" : "▼", EditorStyles.miniButton)) {
-                if (collapsed) _collapsed.Remove(path);
-                else _collapsed.Add(path);
-            }
-
-            var lblS = new GUIStyle(EditorStyles.boldLabel) { normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
-            GUI.Label(new Rect(bx + 22, by, 300, 18), $"{label}   [{arr.Count}]", lblS);
-
-            if (GUI.Button(new Rect(hdrR.xMax - 120, by, 56, 18), "📋 Copy", EditorStyles.miniButton))
-                EditorGUIUtility.systemCopyBuffer = arr.ToString(Formatting.None);
-
-            if (GUI.Button(new Rect(hdrR.xMax - 60, by, 52, 18), "+ Add", EditorStyles.miniButton)) {
-                JToken v = arr.Count > 0 ? CreateDefaultValueForToken(arr[0]) : JValue.CreateNull();
-                arr.Add(v);
-                _collapsed.Remove(path);
-                OnTokenChanged();
-            }
-
-            if (!collapsed) {
-                bool isShort = arr.Count <= 24 &&
-                               arr.All(t => t.Type is JTokenType.Integer or JTokenType.Float or JTokenType.String);
-                if (isShort) DrawPrimitiveArrayChips(arr, path);
-                else DrawPrimitiveArrayRows(arr, path);
-            }
-        }
-
-        // Horizontal chip-style for short arrays
-        private void DrawPrimitiveArrayChips(JArray arr, string path) {
-            string key = path + "__chips";
-            var sv = _tableScrolls.TryGetValue(key, out var v) ? v : Vector2.zero;
-            var bgR = GUILayoutUtility.GetRect(0, CellH + 6, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(bgR, new Color(0.14f, 0.14f, 0.18f));
-
-            GUILayout.BeginArea(bgR);
-            sv = GUILayout.BeginScrollView(sv, false, false, GUILayout.Height(bgR.height));
-            GUILayout.BeginHorizontal();
-            GUILayout.Space(4);
-
-            int removeIdx = -1;
-            for (int i = 0; i < arr.Count; i++) {
-                int cap = i;
-                var chipR = GUILayoutUtility.GetRect(76, CellH);
-                EditorGUI.DrawRect(chipR, ClrChip);
-                EditorGUI.DrawRect(new Rect(chipR.xMax, chipR.y, 2, chipR.height), ClrSep);
-
-                // Index
-                GUI.Label(new Rect(chipR.x + 2, chipR.y, 20, chipR.height),
-                    $"[{i}]", EditorStyles.centeredGreyMiniLabel);
-
-                // Value field
-                EditorGUI.BeginChangeCheck();
-                string ns = EditorGUI.TextField(
-                    new Rect(chipR.x + 22, chipR.y + 1, 38, chipR.height - 2),
-                    arr[i].ToString(), _cellField);
-                if (EditorGUI.EndChangeCheck()) {
-                    arr[cap] = TryConvertToOriginalType(arr[i], ns);
-                    OnTokenChanged();
-                }
-
-                // Remove
-                var prevC = GUI.color;
-                GUI.color = new Color(1f, 0.5f, 0.5f);
-                if (GUI.Button(new Rect(chipR.xMax - 15, chipR.y + 1, 13, chipR.height - 2),
-                        "×", EditorStyles.miniLabel)) removeIdx = i;
-                GUI.color = prevC;
-
-                GUILayout.Space(3);
-            }
-
-            GUILayout.EndHorizontal();
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-            _tableScrolls[key] = sv;
-
-            if (removeIdx >= 0) {
-                arr.RemoveAt(removeIdx);
-                OnTokenChanged();
-                GUIUtility.ExitGUI();
-            }
-        }
-
-        // Vertical rows for long arrays
-        private void DrawPrimitiveArrayRows(JArray arr, string path) {
-            string key = path + "__rows";
-            var sv = _tableScrolls.TryGetValue(key, out var v) ? v : Vector2.zero;
-            float rowsH = arr.Count * (CellH + 1);
-            float bodyH = Mathf.Min(rowsH + 4, 200f);
-            var bodyR = GUILayoutUtility.GetRect(0, bodyH, GUILayout.ExpandWidth(true));
-            var inner = new Rect(0, 0, bodyR.width, rowsH + 4);
-
-            sv = GUI.BeginScrollView(bodyR, sv, inner, false, rowsH + 4 > bodyH);
-            int removeIdx = -1;
-            for (int i = 0; i < arr.Count; i++) {
-                float ry = i * (CellH + 1);
-                EditorGUI.DrawRect(new Rect(0, ry, inner.width, CellH), i % 2 == 0 ? ClrRowEven : ClrRowOdd);
-                GUI.Label(new Rect(4, ry + 2, RowNumW, CellH - 4), $"[{i}]", _rowNumStyle);
-                int cap = i;
-                DrawTokenValueField(arr[i],
-                    new Rect(RowNumW + 4, ry + 2, inner.width - RowNumW - 34, CellH - 4),
-                    tok => {
-                        arr[cap] = tok;
-                        OnTokenChanged();
-                    });
-                var prevC = GUI.color;
-                GUI.color = new Color(1f, 0.5f, 0.5f);
-                if (GUI.Button(new Rect(inner.width - 28, ry + 2, 24, CellH - 4), "✕", _actionBtn)) removeIdx = i;
-                GUI.color = prevC;
-            }
-
-            GUI.EndScrollView();
-            _tableScrolls[key] = sv;
-            if (removeIdx >= 0) {
-                arr.RemoveAt(removeIdx);
-                OnTokenChanged();
-                GUIUtility.ExitGUI();
-            }
-        }
-
-        // ── Nested object section ──────────────────────────────────
-        private void DrawNestedObjectSection(JObject obj, string path, string label) {
-            bool collapsed = _collapsed.Contains(path);
-            var hdrR = GUILayoutUtility.GetRect(0, 26, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(hdrR, ClrSectionBg);
-            float bx = hdrR.x + 4, by = hdrR.y + 4;
-            if (GUI.Button(new Rect(bx, by, 18, 18), collapsed ? "▶" : "▼", EditorStyles.miniButton)) {
-                if (collapsed) _collapsed.Remove(path);
-                else _collapsed.Add(path);
-            }
-
-            var lblS = new GUIStyle(EditorStyles.boldLabel) { normal = { textColor = new Color(0.8f, 0.9f, 1f) } };
-            GUI.Label(new Rect(bx + 22, by, 280, 18), $"{label}   {{object}}", lblS);
-            if (!collapsed) DrawJObjectProperties(obj, path);
-        }
-
-        // ── Token value field ──────────────────────────────────────
-        private void DrawTokenValueField(JToken tok, Rect rect, Action<JToken> onChange) {
-            if (tok == null) tok = JValue.CreateNull();
-
-            switch (tok.Type) {
-                case JTokenType.Boolean:
-                {
-                    bool cur = tok.Value<bool>();
-                    var toggleR = new Rect(rect.x + 4, rect.y, Mathf.Min(rect.height, 22), rect.height);
-                    bool next = EditorGUI.Toggle(toggleR, cur);
-                    GUI.Label(new Rect(rect.x + 28, rect.y + 1, rect.width - 28, rect.height - 2), cur ? "true" : "false", EditorStyles.miniLabel);
-                    if (next != cur) onChange(new JValue(next));
-                    break;
-                }
-
-                case JTokenType.Object:
-                case JTokenType.Array:
-                {
-                    DrawNestedTokenCell(tok, rect, onChange);
-                    break;
-                }
-
-                case JTokenType.Null:
-                {
-                    Rect inputR = DrawTypeBadgeIfNeeded(tok, rect);
-                    EditorGUI.BeginChangeCheck();
-                    string next = EditorGUI.TextField(inputR, "null", _cellField);
-                    if (EditorGUI.EndChangeCheck())
-                        onChange(SmartParseScalar(next, tok));
-                    break;
-                }
-
-                default:
-                {
-                    Rect inputR = DrawTypeBadgeIfNeeded(tok, rect);
-                    EditorGUI.BeginChangeCheck();
-                    string next = EditorGUI.TextField(inputR, ScalarToDisplayString(tok), _cellField);
-                    if (EditorGUI.EndChangeCheck()) onChange(SmartParseScalar(next, tok));
-                    break;
-                }
-            }
-        }
-
-        private Rect DrawTypeBadgeIfNeeded(JToken tok, Rect rect) {
-            if (!_showTypeBadges || rect.width < 120) return rect;
-
-            const float badgeW = 44f;
-            var inputR = new Rect(rect.x, rect.y, rect.width - badgeW - 3, rect.height);
-            var badgeR = new Rect(inputR.xMax + 3, rect.y + 2, badgeW, rect.height - 4);
-
-            EditorGUI.DrawRect(badgeR, new Color(0.12f, 0.13f, 0.17f, 0.9f));
-            var s = new GUIStyle(EditorStyles.centeredGreyMiniLabel)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 9
-            };
-            GUI.Label(badgeR, TokenTypeShort(tok), s);
-            return inputR;
-        }
-
-        private static string TokenTypeShort(JToken tok) => tok?.Type switch
+        private void ApplyPendingRowChanges(JArray arr, string path, int deleteRow, int duplicateRow, int convertRow, List<string> columns)
         {
-            JTokenType.Integer => "int",
-            JTokenType.Float => "float",
-            JTokenType.Boolean => "bool",
-            JTokenType.String => "str",
-            JTokenType.Null => "null",
-            JTokenType.Array => "array",
-            JTokenType.Object => "obj",
-            _ => "val"
-        };
+            if (pendingMoveTable == path && pendingMoveFrom >= 0 && pendingMoveTarget >= 0)
+            {
+                MoveRowTo(arr, pendingMoveFrom, pendingMoveTarget);
+                pendingMoveTable = "";
+                pendingMoveFrom = -1;
+                pendingMoveTarget = -1;
+                GUIUtility.ExitGUI();
+            }
 
-        private void DrawNestedTokenCell(JToken tok, Rect rect, Action<JToken> onChange) {
-            var previewR = new Rect(rect.x, rect.y, Mathf.Max(20, rect.width - 46), rect.height);
-            var btnR = new Rect(rect.xMax - 42, rect.y + 1, 42, rect.height - 2);
+            if (convertRow >= 0 && convertRow < arr.Count)
+            {
+                JObject obj = new JObject();
+                foreach (string col in columns)
+                    obj[col] = "";
+                obj["value"] = arr[convertRow] == null ? JValue.CreateNull() : arr[convertRow].DeepClone();
+                arr[convertRow] = obj;
+                OnTokenChanged();
+                GUIUtility.ExitGUI();
+            }
 
-            EditorGUI.DrawRect(previewR, ClrNested);
-            string icon = tok.Type == JTokenType.Array ? "[]" : "{}";
-            string preview = CompactTokenPreview(tok, 90);
-            GUI.Label(new Rect(previewR.x + 5, previewR.y + 1, previewR.width - 8, previewR.height - 2),
-                $"{icon} {preview}", EditorStyles.miniLabel);
+            if (duplicateRow >= 0)
+            {
+                DuplicateRow(arr, path, duplicateRow);
+                GUIUtility.ExitGUI();
+            }
 
-            if (GUI.Button(btnR, "Edit", EditorStyles.miniButton)) {
-                JsonTokenEditWindow.Open(tok, edited => {
-                    onChange(edited);
-                    Repaint();
-                });
+            if (deleteRow >= 0)
+            {
+                DeleteRow(arr, deleteRow);
+                GUIUtility.ExitGUI();
             }
         }
 
-        private static string ScalarToDisplayString(JToken tok) {
-            if (tok == null || tok.Type == JTokenType.Null) return "null";
-            return tok.Type == JTokenType.String ? tok.Value<string>() : tok.ToString(Formatting.None);
-        }
+        private List<string> GetColumns(JArray arr)
+        {
+            if (!IsObjectTable(arr))
+                return new List<string> { "value" };
 
-        private static string CompactTokenPreview(JToken tok, int maxLen = 120) {
-            string s = tok == null ? "null" : tok.ToString(Formatting.None);
-            s = s.Replace("\r", "").Replace("\n", " ");
-            return s.Length > maxLen ? s.Substring(0, maxLen - 1) + "…" : s;
-        }
+            List<string> result = new List<string>();
+            HashSet<string> set = new HashSet<string>();
 
-        // ═══════════════════════════════════════════════════════════
-        //  TEXT MODE
-        // ═══════════════════════════════════════════════════════════
-        private void DrawTextMode(Rect rect) {
-            GUILayout.BeginArea(rect);
-            _textScroll = GUILayout.BeginScrollView(_textScroll);
-            EditorGUI.BeginChangeCheck();
-            _editText = GUILayout.TextArea(_editText, _monoStyle,
-                GUILayout.ExpandHeight(true), GUILayout.ExpandWidth(true));
-            if (EditorGUI.EndChangeCheck()) {
-                _isDirty = true;
-                _files[_selectedIndex].IsDirty = true;
-                SetStatus("", MessageType.None);
+            string[] preferred = { "id", "Id", "ID", "key", "name", "Name", "order", "sortOrder", "index", "level", "type", "price", "amount", "value" };
+            foreach (string key in preferred)
+            {
+                if (arr.OfType<JObject>().Any(o => o.Property(key) != null) && set.Add(key))
+                    result.Add(key);
             }
 
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
+            foreach (JObject obj in arr.OfType<JObject>())
+            {
+                foreach (JProperty prop in obj.Properties())
+                {
+                    if (set.Add(prop.Name))
+                        result.Add(prop.Name);
+                }
+            }
+
+            if (arr.Count > 0 && result.Count == 0)
+                result.Add("row_json");
+
+            return result;
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Status bar
-        // ═══════════════════════════════════════════════════════════
-        private void DrawStatusBar(Rect rect) {
-            Color bg = _statusType switch
-            {
-                MessageType.Error => new Color(0.45f, 0.08f, 0.08f),
-                MessageType.Warning => new Color(0.40f, 0.33f, 0.04f),
-                MessageType.Info => new Color(0.08f, 0.28f, 0.45f),
-                _ => new Color(0.17f, 0.17f, 0.17f),
-            };
-            Color fg = _statusType switch
-            {
-                MessageType.Error => ClrErr,
-                MessageType.Warning => ClrDirty,
-                MessageType.Info => ClrGood,
-                _ => new Color(0.55f, 0.55f, 0.55f),
-            };
-            EditorGUI.DrawRect(rect, bg);
-            GUI.Label(rect, _statusMsg, new GUIStyle(EditorStyles.miniLabel)
-            {
-                padding = new RectOffset(8, 8, 4, 4), normal = { textColor = fg }
-            });
+        private bool IsObjectTable(JArray arr)
+        {
+            return arr.Count == 0 || arr.Any(x => x is JObject);
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Column width helpers
-        // ═══════════════════════════════════════════════════════════
-        private float[] ComputeColumnWidths(string path, List<string> keys, JArray arr) {
-            var widths = new float[keys.Count];
-            for (int ci = 0; ci < keys.Count; ci++) {
-                string key = keys[ci];
-                string ck = path + "." + key;
-                if (_columnWidths.TryGetValue(ck, out float cached)) {
-                    widths[ci] = cached;
+        private List<int> GetVisibleRows(JArray arr, string path)
+        {
+            string filter = tableFilter.TryGetValue(path, out string f) ? f : "";
+            List<int> rows = new List<int>();
+
+            for (int i = 0; i < arr.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(filter) || arr[i].ToString(Formatting.None).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                    rows.Add(i);
+            }
+
+            return rows;
+        }
+
+        private float[] BuildColumnWidths(JArray arr, string path, List<string> columns, bool objectTable)
+        {
+            float[] widths = new float[columns.Count];
+
+            for (int i = 0; i < columns.Count; i++)
+            {
+                string key = columns[i];
+                string cacheKey = path + "." + key;
+
+                if (columnWidths.TryGetValue(cacheKey, out float cached))
+                {
+                    widths[i] = cached;
                     continue;
                 }
 
-                float maxW = GetPreferredColumnBaseWidth(key);
-                int sample = Mathf.Min(arr.Count, 160);
+                float width = Mathf.Clamp(key.Length * 9f + 60f, CellMinWidth, CellMaxWidth);
 
-                for (int ri = 0; ri < sample; ri++) {
-                    if (arr[ri] is not JObject row || !row.TryGetValue(key, out var tv)) continue;
-                    maxW = Mathf.Max(maxW, EstimateTokenDisplayWidth(key, tv));
+                int sampleCount = Mathf.Min(arr.Count, 80);
+                for (int r = 0; r < sampleCount; r++)
+                {
+                    string value = objectTable ? TokenToText(GetCell(arr[r], key)) : TokenToText(arr[r]);
+                    width = Mathf.Max(width, Mathf.Clamp(value.Length * 7f + 70f, CellMinWidth, CellMaxWidth));
                 }
 
-                maxW = Mathf.Clamp(maxW, GetColumnMinWidth(key), GetColumnMaxWidth(key));
-                _columnWidths[ck] = maxW;
-                widths[ci] = maxW;
+                if (IsCompactKey(key))
+                    width = Mathf.Min(width, 140f);
+
+                columnWidths[cacheKey] = width;
+                widths[i] = width;
             }
 
             return widths;
         }
 
-        private static float GetPreferredColumnBaseWidth(string key) {
-            string k = (key ?? "").ToLowerInvariant();
-
-            if (IsCompactKey(k)) return 92f;
-            if (k.Contains("name") || k.Contains("title")) return 190f;
-            if (k.Contains("description") || k.Contains("desc") || k.Contains("productid") || k.Contains("address")) return 280f;
-            if (k.Contains("sprite") || k.Contains("icon") || k.Contains("prefab") || k.Contains("asset") || k.Contains("path")) return 240f;
-            if (k.Contains("json") || k.Contains("data") || k.Contains("config")) return 260f;
-
-            return Mathf.Max((key?.Length ?? 0) * 9f + 36f, MinDataColW);
+        private bool IsCompactKey(string key)
+        {
+            key = (key ?? "").ToLowerInvariant();
+            return key == "id" || key == "index" || key == "level" || key == "order" ||
+                   key.Contains("price") || key.Contains("amount") || key.Contains("count") ||
+                   key.Contains("rate") || key.Contains("value") || key.Contains("enabled");
         }
 
-        private static float GetColumnMinWidth(string key) {
-            string k = (key ?? "").ToLowerInvariant();
-            if (IsCompactKey(k)) return 74f;
-            if (k.StartsWith("is") || k.StartsWith("can") || k.StartsWith("has") || k.Contains("enabled")) return 96f;
-            return MinDataColW;
+        private JToken GetCell(JToken row, string key)
+        {
+            if (row is JObject obj && obj.TryGetValue(key, out JToken value))
+                return value ?? JValue.CreateNull();
+
+            if (key == "value" || key == "row_json")
+                return row ?? JValue.CreateNull();
+
+            return JValue.CreateNull();
         }
 
-        private static float GetColumnMaxWidth(string key) {
-            string k = (key ?? "").ToLowerInvariant();
-            if (IsCompactKey(k)) return 130f;
-            if (k.Contains("description") || k.Contains("desc")) return 560f;
-            if (k.Contains("productid") || k.Contains("path") || k.Contains("json") || k.Contains("config")) return 520f;
-            if (k.Contains("name") || k.Contains("title")) return 360f;
-            return MaxDataColW;
+        private JToken FindSample(JArray arr, string key)
+        {
+            foreach (JToken row in arr)
+            {
+                JToken value = GetCell(row, key);
+                if (value != null && value.Type != JTokenType.Null)
+                    return value;
+            }
+
+            return null;
         }
 
-        private static bool IsCompactKey(string k) {
-            return k == "id" || k == "idx" || k == "index" || k == "order" || k == "sortorder" ||
-                   k == "tier" || k == "level" || k == "lv" || k.EndsWith("id") && k.Length <= 8 ||
-                   k.Contains("cost") || k.Contains("price") || k.Contains("count") || k.Contains("amount") ||
-                   k.Contains("value") || k.Contains("rate") || k.Contains("multiplier") || k.Contains("duration") ||
-                   k.Contains("cooldown");
+        private JToken CreateEmptyRowLike(JArray arr)
+        {
+            if (arr == null || arr.Count == 0)
+                return new JObject { ["id"] = "" };
+
+            JToken sample = arr.OfType<JObject>().FirstOrDefault() ?? arr[0];
+
+            if (sample is JObject obj)
+            {
+                JObject newObj = new JObject();
+                foreach (JProperty prop in obj.Properties())
+                    newObj[prop.Name] = DefaultValue(prop.Value);
+
+                if (!newObj.HasValues)
+                    newObj["id"] = "";
+
+                return newObj;
+            }
+
+            return DefaultValue(sample);
         }
 
-        private static float EstimateTokenDisplayWidth(string key, JToken token) {
-            if (token == null || token.Type == JTokenType.Null) return 78f;
+        private JToken DefaultValue(JToken sample)
+        {
+            if (sample == null) return JValue.CreateNull();
 
-            switch (token.Type) {
-                case JTokenType.Boolean:
-                    return 104f;
-                case JTokenType.Integer:
-                case JTokenType.Float:
-                    return Mathf.Clamp(token.ToString(Formatting.None).Length * 8.5f + 42f, GetColumnMinWidth(key), 160f);
-                case JTokenType.Array:
-                    return Mathf.Clamp(150f + Math.Min(token.ToString(Formatting.None).Length, 120) * 2.0f, 180f, GetColumnMaxWidth(key));
-                case JTokenType.Object:
-                    return Mathf.Clamp(160f + Math.Min(token.ToString(Formatting.None).Length, 120) * 2.0f, 200f, GetColumnMaxWidth(key));
-                default:
-                    string s = ScalarToDisplayString(token);
-                    if (string.IsNullOrEmpty(s)) return 88f;
-                    // Pixel-ish approximation that avoids overly huge columns for long text.
-                    float w = s.Length <= 18 ? s.Length * 9.0f + 50f :
-                              s.Length <= 48 ? s.Length * 7.5f + 70f :
-                              s.Length <= 96 ? s.Length * 5.5f + 120f :
-                              520f;
-                    return Mathf.Clamp(w, GetColumnMinWidth(key), GetColumnMaxWidth(key));
+            switch (sample.Type)
+            {
+                case JTokenType.Integer: return new JValue(0);
+                case JTokenType.Float: return new JValue(0f);
+                case JTokenType.Boolean: return new JValue(false);
+                case JTokenType.Array: return new JArray();
+                case JTokenType.Object: return new JObject();
+                default: return new JValue("");
             }
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  Token helpers
-        // ═══════════════════════════════════════════════════════════
-        private static JToken TryConvertToOriginalType(JToken original, string s) => SmartParseScalar(s, original);
+        private string TokenToText(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+                return "";
+            if (token.Type == JTokenType.String)
+                return token.Value<string>() ?? "";
+            return token.ToString(Formatting.None);
+        }
 
-        private static JToken SmartParseScalar(string s, JToken original = null) {
-            s ??= "";
+        private string PreviewToken(JToken token, int max)
+        {
+            string text = token == null ? "null" : token.ToString(Formatting.None).Replace("\n", " ").Replace("\r", "");
+            return text.Length <= max ? text : text.Substring(0, max - 3) + "...";
+        }
 
-            if (original != null) {
-                switch (original.Type) {
-                    case JTokenType.String:
-                        return new JValue(s);
+        private JToken ParseCell(string text, JToken sample)
+        {
+            text = text ?? "";
+            string trim = text.Trim();
+
+            if (sample != null)
+            {
+                switch (sample.Type)
+                {
+                    case JTokenType.String: return new JValue(text);
                     case JTokenType.Integer:
-                        return long.TryParse(s, out long lv) ? new JValue(lv) : new JValue(s);
+                        if (long.TryParse(trim, NumberStyles.Integer, CultureInfo.InvariantCulture, out long i)) return new JValue(i);
+                        return new JValue(text);
                     case JTokenType.Float:
-                        return double.TryParse(s,
-                            System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out double dv)
-                            ? new JValue(dv)
-                            : new JValue(s);
+                        if (double.TryParse(trim, NumberStyles.Float, CultureInfo.InvariantCulture, out double f)) return new JValue(f);
+                        return new JValue(text);
                     case JTokenType.Boolean:
-                        return bool.TryParse(s, out bool bv) ? new JValue(bv) : new JValue(s);
+                        if (bool.TryParse(trim, out bool b)) return new JValue(b);
+                        return new JValue(text);
                 }
             }
 
-            string trim = s.Trim();
             if (trim.Equals("null", StringComparison.OrdinalIgnoreCase)) return JValue.CreateNull();
             if (trim.Equals("true", StringComparison.OrdinalIgnoreCase)) return new JValue(true);
             if (trim.Equals("false", StringComparison.OrdinalIgnoreCase)) return new JValue(false);
-            if (long.TryParse(trim, out long il)) return new JValue(il);
-            if (double.TryParse(trim,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double fl))
-                return new JValue(fl);
+            if (long.TryParse(trim, NumberStyles.Integer, CultureInfo.InvariantCulture, out long li)) return new JValue(li);
+            if (double.TryParse(trim, NumberStyles.Float, CultureInfo.InvariantCulture, out double df)) return new JValue(df);
 
-            if ((trim.StartsWith("{") && trim.EndsWith("}")) || (trim.StartsWith("[") && trim.EndsWith("]"))) {
-                try { return JToken.Parse(trim); }
-                catch { /* keep as string */ }
-            }
-
-            return new JValue(s);
-        }
-
-        private static JToken CreateDefaultValueForToken(JToken sample) {
-            if (sample == null) return JValue.CreateNull();
-            return sample.Type switch
+            if ((trim.StartsWith("{") && trim.EndsWith("}")) || (trim.StartsWith("[") && trim.EndsWith("]")))
             {
-                JTokenType.Integer => new JValue(0L),
-                JTokenType.Float => new JValue(0.0),
-                JTokenType.Boolean => new JValue(false),
-                JTokenType.String => new JValue(""),
-                JTokenType.Null => JValue.CreateNull(),
-                JTokenType.Object => new JObject(((JObject)sample).Properties()
-                    .Select(p => new JProperty(p.Name, CreateDefaultValueForToken(p.Value)))),
-                JTokenType.Array => new JArray(),
-                _ => new JValue("")
-            };
-        }
-
-        private static void AddCloneRow(JArray arr) {
-            if (arr.Count == 0) {
-                arr.Add(new JObject());
-                return;
+                try { return JToken.Parse(trim); }
+                catch { }
             }
 
-            var clone = arr[arr.Count - 1] is JObject last ? (JObject)last.DeepClone() : new JObject();
-            foreach (var p in clone.Properties().ToList())
-                p.Value = CreateDefaultValueForToken(p.Value);
-
-            arr.Add(clone);
+            return new JValue(text);
         }
 
-        private void OnTokenChanged() {
-            _isDirty = true;
-            if (_selectedIndex >= 0 && _selectedIndex < _files.Count) _files[_selectedIndex].IsDirty = true;
-            if (_rootToken != null) _editText = _rootToken.ToString(Formatting.Indented);
-            SetStatus("", MessageType.None);
+        private bool IsEmpty(JToken token)
+        {
+            return token == null || token.Type == JTokenType.Null ||
+                   (token.Type == JTokenType.String && string.IsNullOrWhiteSpace(token.Value<string>()));
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  View mode switching
-        // ═══════════════════════════════════════════════════════════
-        private void SwitchViewMode(ViewMode next) {
-            if (next == ViewMode.Visual) {
-                if (TryParseJson(_editText, out JToken tok, out string err)) {
-                    _rootToken = tok;
-                    _parseError = false;
-                    _viewMode = ViewMode.Visual;
-                    _visualScroll = Vector2.zero;
-                    _tableScrolls.Clear();
-                    _tableFilters.Clear();
-                    _lastSortRules.Clear();
-                    _lastSortLabels.Clear();
-                    _columnWidths.Clear();
-                }
-                else {
-                    _rootToken = null;
-                    _parseError = true;
-                    _parseErrorMsg = err;
-                    _viewMode = ViewMode.Visual;
-                }
+        private bool TryDouble(JToken token, out double value)
+        {
+            value = 0;
+            if (token == null) return false;
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                value = token.Value<double>();
+                return true;
             }
-            else {
-                if (_rootToken != null) _editText = _rootToken.ToString(Formatting.Indented);
-                _viewMode = ViewMode.Text;
-            }
+            return double.TryParse(TokenToText(token), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  File / config copy helpers
-        // ═══════════════════════════════════════════════════════════
-        private JsonFileEntry CurrentFile =>
-            _selectedIndex >= 0 && _selectedIndex < _files.Count ? _files[_selectedIndex] : null;
-
-        private void CopyCurrentConfigName() {
-            var file = CurrentFile;
-            if (file == null) return;
-            EditorGUIUtility.systemCopyBuffer = file.DisplayName;
-            SetStatus($"📋 Config name copied: {file.DisplayName}", MessageType.Info);
+        private string EscapeTsv(string value)
+        {
+            return (value ?? "").Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
         }
 
-        private void CopyCurrentConfigPath() {
-            var file = CurrentFile;
-            if (file == null) return;
-            EditorGUIUtility.systemCopyBuffer = file.RelativePath;
-            SetStatus($"📋 Config path copied: {file.RelativePath}", MessageType.Info);
+        private string UnescapeTsv(string value)
+        {
+            return (value ?? "").Replace("\\t", "\t").Replace("\\n", "\n").Replace("\\r", "\r");
         }
 
-        private void CopyCurrentConfigFullPath() {
-            var file = CurrentFile;
-            if (file == null) return;
-            EditorGUIUtility.systemCopyBuffer = file.FullPath;
-            SetStatus("📋 Full path copied.", MessageType.Info);
+        private bool MatchesFileSearch(FileEntry file)
+        {
+            if (string.IsNullOrWhiteSpace(fileSearch)) return true;
+            return file.DisplayName.IndexOf(fileSearch, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   file.RelativePath.IndexOf(fileSearch, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void CopyCurrentConfigJson(bool pretty) {
-            var file = CurrentFile;
-            if (file == null) return;
+        private void RefreshFiles(bool reloadSelected)
+        {
+            string oldPath = HasSelectedFile() ? CurrentFile.FullPath : "";
+            files.Clear();
 
-            try {
-                var tok = _rootToken ?? JToken.Parse(_editText);
-                EditorGUIUtility.systemCopyBuffer = tok.ToString(pretty ? Formatting.Indented : Formatting.None);
-                SetStatus(pretty ? "📋 Pretty JSON copied." : "📋 Minified JSON copied.", MessageType.Info);
-            }
-            catch (Exception e) {
-                SetStatus($"❌ Cannot copy JSON: {e.Message}", MessageType.Error);
-            }
-        }
+            if (sourceMode == SourceMode.DataConfig)
+            {
+                foreach (string guid in AssetDatabase.FindAssets("t:TextAsset"))
+                {
+                    string assetPath = NormalizePath(AssetDatabase.GUIDToAssetPath(guid));
+                    if (!assetPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (assetPath.IndexOf(DataConfigMarker, StringComparison.OrdinalIgnoreCase) < 0) continue;
 
-        private void RevealCurrentFile() {
-            var file = CurrentFile;
-            if (file == null || !File.Exists(file.FullPath)) return;
-            EditorUtility.RevealInFinder(file.FullPath);
-        }
-
-        private void PingCurrentFile() {
-            var file = CurrentFile;
-            if (file == null) return;
-            string assetPath = file.Source == DataSourceMode.DataConfig ? file.RelativePath : null;
-            if (string.IsNullOrEmpty(assetPath)) return;
-            var asset = AssetDatabase.LoadAssetAtPath<TextAsset>(assetPath);
-            if (asset != null) {
-                EditorGUIUtility.PingObject(asset);
-                Selection.activeObject = asset;
-            }
-        }
-
-        private void ShowFileContextMenu(int index) {
-            if (index < 0 || index >= _files.Count) return;
-
-            var f = _files[index];
-            var menu = new GenericMenu();
-
-            menu.AddItem(new GUIContent("Open"), false, () => SelectFile(index));
-            menu.AddItem(new GUIContent("Reveal In Folder"), false, () => {
-                SelectFile(index);
-                RevealCurrentFile();
-            });
-            if (f.Source == DataSourceMode.DataConfig) {
-                menu.AddItem(new GUIContent("Ping In Project"), false, () => {
-                    SelectFile(index);
-                    PingCurrentFile();
-                });
-            }
-            else {
-                menu.AddDisabledItem(new GUIContent("Ping In Project"));
-            }
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Copy/Config Name"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = f.DisplayName;
-                SetStatus($"📋 Config name copied: {f.DisplayName}", MessageType.Info);
-            });
-            menu.AddItem(new GUIContent("Copy/Relative Path"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = f.RelativePath;
-                SetStatus("📋 Relative path copied.", MessageType.Info);
-            });
-            menu.AddItem(new GUIContent("Copy/Full Path"), false, () => {
-                EditorGUIUtility.systemCopyBuffer = f.FullPath;
-                SetStatus("📋 Full path copied.", MessageType.Info);
-            });
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Copy JSON/Minified"), false, () => {
-                try {
-                    EditorGUIUtility.systemCopyBuffer = JToken.Parse(File.ReadAllText(f.FullPath, Encoding.UTF8)).ToString(Formatting.None);
-                    SetStatus("📋 Minified JSON copied.", MessageType.Info);
-                }
-                catch (Exception e) { SetStatus($"❌ Copy failed: {e.Message}", MessageType.Error); }
-            });
-
-            menu.AddItem(new GUIContent("Copy JSON/Pretty"), false, () => {
-                try {
-                    EditorGUIUtility.systemCopyBuffer = JToken.Parse(File.ReadAllText(f.FullPath, Encoding.UTF8)).ToString(Formatting.Indented);
-                    SetStatus("📋 Pretty JSON copied.", MessageType.Info);
-                }
-                catch (Exception e) { SetStatus($"❌ Copy failed: {e.Message}", MessageType.Error); }
-            });
-
-            menu.AddSeparator("");
-
-            menu.AddItem(new GUIContent("Duplicate Config File As..."), false, () => {
-                SelectFile(index);
-                StringInputWindow.Open("Duplicate Config", "New config file name:", f.DisplayName + "_copy",
-                    newName => DuplicateCurrentConfigFile(newName));
-            });
-
-            menu.ShowAsContext();
-        }
-
-        private void DuplicateCurrentConfigFile(string newName) {
-            var file = CurrentFile;
-            if (file == null) return;
-
-            newName = (newName ?? "").Trim();
-            if (string.IsNullOrEmpty(newName)) return;
-            if (!newName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) newName += ".json";
-
-            string dir = Path.GetDirectoryName(file.FullPath);
-            string target = Path.Combine(dir, newName);
-            if (File.Exists(target)) {
-                SetStatus($"❌ File already exists: {newName}", MessageType.Error);
-                return;
-            }
-
-            try {
-                File.Copy(file.FullPath, target);
-                AssetDatabase.Refresh();
-                RefreshFileList();
-                SetStatus($"✅ Duplicated config: {newName}", MessageType.Info);
-            }
-            catch (Exception e) {
-                SetStatus($"❌ Duplicate failed: {e.Message}", MessageType.Error);
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  File operations
-        // ═══════════════════════════════════════════════════════════
-        private void RefreshFileList() {
-            _files.Clear();
-
-            if (_sourceMode == DataSourceMode.DataConfig) {
-                foreach (string guid in AssetDatabase.FindAssets("t:TextAsset")) {
-                    string assetPath = AssetDatabase.GUIDToAssetPath(guid);
-                    string normalized = assetPath.Replace('\\', '/');
-                    if (!normalized.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (normalized.IndexOf(DataConfigFolderMarker, StringComparison.OrdinalIgnoreCase) < 0) continue;
-
-                    string fullPath = Path.GetFullPath(assetPath);
-                    string displayName = normalized.Substring(
-                        normalized.IndexOf(DataConfigFolderMarker, StringComparison.OrdinalIgnoreCase) + DataConfigFolderMarker.Length);
-                    if (displayName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                        displayName = displayName.Substring(0, displayName.Length - ".json".Length);
-
-                    _files.Add(new JsonFileEntry {
-                        FullPath = fullPath,
-                        RelativePath = normalized,
-                        DisplayName = displayName,
-                        Source = _sourceMode
+                    files.Add(new FileEntry
+                    {
+                        AssetPath = assetPath,
+                        FullPath = Path.GetFullPath(assetPath),
+                        RelativePath = assetPath.Substring(assetPath.IndexOf(DataConfigMarker, StringComparison.OrdinalIgnoreCase) + DataConfigMarker.Length),
+                        DisplayName = Path.GetFileNameWithoutExtension(assetPath)
                     });
                 }
             }
-            else {
-                string folder = GetSaveDirectory();
-                Directory.CreateDirectory(folder);
-
-                foreach (string p in Directory.GetFiles(folder, "*", SearchOption.TopDirectoryOnly)) {
-                    if (IsHiddenSaveFile(p)) continue;
-
-                    _files.Add(new JsonFileEntry {
-                        FullPath = p,
-                        RelativePath = p,
-                        DisplayName = Path.GetFileName(p),
-                        Source = _sourceMode
-                    });
+            else
+            {
+                string dir = GetSaveDirectory();
+                if (Directory.Exists(dir))
+                {
+                    foreach (string path in Directory.GetFiles(dir))
+                    {
+                        if (IsVisibleSave(path))
+                        {
+                            files.Add(new FileEntry
+                            {
+                                AssetPath = "",
+                                FullPath = path,
+                                RelativePath = Path.GetFileName(path),
+                                DisplayName = Path.GetFileName(path)
+                            });
+                        }
+                    }
                 }
             }
 
-            _files = _files.OrderBy(f => f.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+            files.Sort((a, b) => string.Compare(a.RelativePath, b.RelativePath, StringComparison.OrdinalIgnoreCase));
 
-            SetStatus($"Found {_files.Count} {(_sourceMode == DataSourceMode.DataConfig ? "config" : "save")} file(s).", MessageType.Info);
+            selectedFileIndex = files.FindIndex(f => string.Equals(f.FullPath, oldPath, StringComparison.OrdinalIgnoreCase));
+            if (selectedFileIndex >= 0 && reloadSelected)
+                LoadFile(files[selectedFileIndex]);
+            else if (selectedFileIndex < 0)
+                ClearCurrentFile();
 
-            if (_selectedIndex >= _files.Count) {
-                ClearCurrentFileState();
-            }
+            SetStatus("Found " + files.Count + " file(s).", MessageType.Info);
         }
 
-        private void SelectFile(int idx) {
-            if (idx == _selectedIndex) return;
+        private void SelectFile(int index)
+        {
+            if (index < 0 || index >= files.Count) return;
+            if (index == selectedFileIndex) return;
+            if (!ConfirmLeaveDirtyFile()) return;
 
-            if (_isDirty && _selectedIndex >= 0) {
-                int result = EditorUtility.DisplayDialogComplex(
-                    "Unsaved Changes",
-                    $"'{_files[_selectedIndex].DisplayName}' has unsaved changes.",
-                    "Save",
-                    "Discard",
-                    "Cancel");
-
-                if (result == 0) SaveCurrent();
-                else if (result == 1 && _selectedIndex < _files.Count) _files[_selectedIndex].IsDirty = false;
-                else return;
-            }
-
-            _selectedIndex = idx;
-            _isDirty = false;
-            _collapsed.Clear();
-            _columnWidths.Clear();
-            _tableScrolls.Clear();
-            _tableFilters.Clear();
-            _lastSortRules.Clear();
-            _lastSortLabels.Clear();
-            _visualScroll = Vector2.zero;
-            _textScroll = Vector2.zero;
-            _selTablePath = "";
-            _selRowIndex = -1;
-            _selCellKey = "";
-            _selCellRowIndex = -1;
-            LoadFile(_files[idx]);
+            selectedFileIndex = index;
+            LoadFile(files[index]);
         }
 
-        private void LoadFile(JsonFileEntry file) {
-            try {
-                string raw = File.ReadAllText(file.FullPath, Encoding.UTF8);
-                _loadedRawFile = raw;
-                file.IsDirty = false;
+        private void LoadFile(FileEntry file)
+        {
+            ClearVisualState();
 
-                string visibleJson = raw;
+            try
+            {
+                originalRawFile = File.ReadAllText(file.FullPath, Encoding.UTF8);
+                JToken token;
 
-                if (file.Source == DataSourceMode.Datasave) {
-                    if (!TryExtractSavePayload(raw, out visibleJson, out string payloadError)) {
-                        _editText = "";
-                        _rootToken = null;
-                        _parseError = true;
-                        _parseErrorMsg = payloadError;
-                        SetStatus(payloadError, MessageType.Warning);
+                if (sourceMode == SourceMode.Datasave)
+                {
+                    if (!TryReadPayload(originalRawFile, out token, out string error))
+                    {
+                        parseError = true;
+                        parseErrorMessage = error;
                         return;
                     }
                 }
-
-                _editText = FormatJsonStr(visibleJson);
-
-                if (TryParseJson(_editText, out JToken tok, out string err)) {
-                    _rootToken = tok;
-                    _parseError = false;
-                    _parseErrorMsg = "";
-                }
-                else {
-                    _rootToken = null;
-                    _parseError = true;
-                    _parseErrorMsg = err;
+                else
+                {
+                    token = JToken.Parse(originalRawFile);
                 }
 
-                SetStatus(file.Source == DataSourceMode.Datasave
-                    ? $"Loaded payload: {file.DisplayName}"
-                    : $"Loaded: {file.RelativePath}", MessageType.Info);
+                rootToken = token;
+                editText = token.ToString(Formatting.Indented);
+                parseError = false;
+                parseErrorMessage = "";
+                isDirty = false;
+                file.Dirty = false;
+                viewMode = ViewMode.Visual;
+                SetStatus("Loaded: " + file.RelativePath, MessageType.Info);
             }
-            catch (Exception e) {
-                _editText = "";
-                _rootToken = null;
-                _parseError = true;
-                _parseErrorMsg = e.Message;
-                SetStatus($"Error: {e.Message}", MessageType.Error);
-            }
-        }
-
-        private void SaveCurrent() {
-            if (_selectedIndex < 0 || _selectedIndex >= _files.Count) return;
-
-            var file = _files[_selectedIndex];
-            string err = "";
-
-            string payloadOrConfig = _viewMode == ViewMode.Visual && _rootToken != null
-                ? _rootToken.ToString(Formatting.Indented)
-                : ValidateJson(_editText, out err)
-                    ? FormatJsonStr(_editText)
-                    : null;
-
-            if (payloadOrConfig == null) {
-                SetStatus($"❌ Invalid JSON: {err}", MessageType.Error);
-                return;
-            }
-
-            try {
-                BackupFile(file.FullPath);
-
-                string toSave = file.Source == DataSourceMode.Datasave
-                    ? BuildSaveFileContent(payloadOrConfig)
-                    : payloadOrConfig;
-
-                File.WriteAllText(file.FullPath, toSave, Encoding.UTF8);
-                _loadedRawFile = toSave;
-                _editText = payloadOrConfig;
-                _isDirty = false;
-                file.IsDirty = false;
-
-                if (file.Source == DataSourceMode.DataConfig) {
-                    string assetPath = AbsoluteToAssetPath(file.FullPath);
-                    if (!string.IsNullOrEmpty(assetPath))
-                        AssetDatabase.ImportAsset(assetPath);
-                    AssetDatabase.Refresh();
-                }
-
-                SetStatus(file.Source == DataSourceMode.Datasave
-                    ? $"✅ Payload saved: {file.DisplayName}"
-                    : $"✅ Saved: {file.RelativePath}", MessageType.Info);
-            }
-            catch (Exception e) {
-                SetStatus($"❌ Save failed: {e.Message}", MessageType.Error);
+            catch (Exception ex)
+            {
+                rootToken = null;
+                editText = originalRawFile;
+                parseError = true;
+                parseErrorMessage = ex.Message;
+                SetStatus("Load failed: " + ex.Message, MessageType.Error);
             }
         }
 
-        private void ReloadCurrent() {
-            if (_selectedIndex < 0 || _selectedIndex >= _files.Count) return;
-            if (_isDirty &&
-                !EditorUtility.DisplayDialog("Reload", "Discard unsaved changes?", "Reload", "Cancel")) return;
-            _isDirty = false;
-            LoadFile(_files[_selectedIndex]);
-        }
-
-        private void FormatJson() {
-            if (!ValidateJson(_editText, out string err)) {
-                SetStatus($"❌ Cannot format: {err}", MessageType.Error);
-                return;
-            }
-
-            _editText = FormatJsonStr(_editText);
-            if (_viewMode == ViewMode.Text)
-                _isDirty = true;
-            SetStatus("Formatted.", MessageType.Info);
-        }
-
-        private bool TryExtractSavePayload(string raw, out string payloadJson, out string error) {
-            payloadJson = "";
+        private bool TryReadPayload(string raw, out JToken payload, out string error)
+        {
+            payload = null;
             error = "";
-            _savePayloadWasString = false;
+            originalPayloadWasString = false;
 
-            try {
-                JToken root = JToken.Parse(raw);
-
-                if (root is JObject envelope && envelope["Payload"] != null) {
-                    JToken payload = envelope["Payload"];
-                    _savePayloadWasString = payload.Type == JTokenType.String;
-
-                    if (_savePayloadWasString) {
-                        string payloadText = payload.Value<string>();
-                        if (string.IsNullOrWhiteSpace(payloadText)) {
-                            payloadJson = "{}";
+            try
+            {
+                JToken saveToken = JToken.Parse(raw);
+                if (saveToken is JObject envelope && envelope["Payload"] != null)
+                {
+                    JToken payloadToken = envelope["Payload"];
+                    if (payloadToken.Type == JTokenType.String)
+                    {
+                        originalPayloadWasString = true;
+                        string text = payloadToken.Value<string>();
+                        if (string.IsNullOrWhiteSpace(text))
+                        {
+                            payload = new JObject();
                             return true;
                         }
 
-                        try {
-                            payloadJson = JToken.Parse(payloadText).ToString(Formatting.Indented);
-                            return true;
-                        }
-                        catch {
-                            payloadJson = JsonConvert.SerializeObject(payloadText, Formatting.Indented);
-                            return true;
-                        }
+                        try { payload = JToken.Parse(text); }
+                        catch { payload = new JValue(text); }
+                        return true;
                     }
 
-                    payloadJson = payload.ToString(Formatting.Indented);
+                    payload = payloadToken.DeepClone();
                     return true;
                 }
 
-                payloadJson = root.ToString(Formatting.Indented);
+                payload = saveToken.DeepClone();
                 return true;
             }
-            catch (Exception e) {
-                error = "Cannot extract save Payload: " + e.Message;
+            catch (Exception ex)
+            {
+                error = "Cannot read save Payload: " + ex.Message;
                 return false;
             }
         }
 
-        private string BuildSaveFileContent(string payloadJson) {
-            JToken payloadToken = JToken.Parse(payloadJson);
+        private void SaveCurrent()
+        {
+            if (!HasSelectedFile()) return;
 
-            try {
-                JToken original = JToken.Parse(_loadedRawFile);
+            JToken token;
+            if (viewMode == ViewMode.Text)
+            {
+                try { token = JToken.Parse(editText); }
+                catch (Exception ex)
+                {
+                    SetStatus("Invalid JSON: " + ex.Message, MessageType.Error);
+                    return;
+                }
+            }
+            else
+            {
+                token = rootToken;
+            }
 
-                if (original is JObject envelope && envelope["Payload"] != null) {
-                    envelope["Payload"] = _savePayloadWasString
-                        ? payloadToken.ToString(Formatting.None)
-                        : payloadToken.DeepClone();
+            if (token == null) return;
 
+            try
+            {
+                if (autoBackup) Backup(CurrentFile.FullPath);
+
+                string output = sourceMode == SourceMode.DataConfig ? token.ToString(Formatting.Indented) : BuildSaveOutput(token);
+                File.WriteAllText(CurrentFile.FullPath, output, Encoding.UTF8);
+
+                originalRawFile = output;
+                rootToken = token;
+                editText = token.ToString(Formatting.Indented);
+                isDirty = false;
+                CurrentFile.Dirty = false;
+
+                if (sourceMode == SourceMode.DataConfig)
+                {
+                    AssetDatabase.ImportAsset(CurrentFile.AssetPath);
+                    AssetDatabase.Refresh();
+                }
+
+                SetStatus(sourceMode == SourceMode.Datasave ? "Payload saved." : "Config saved.", MessageType.Info);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Save failed: " + ex.Message, MessageType.Error);
+            }
+        }
+
+        private string BuildSaveOutput(JToken payload)
+        {
+            try
+            {
+                JToken original = JToken.Parse(originalRawFile);
+                if (original is JObject envelope && envelope["Payload"] != null)
+                {
+                    envelope["Payload"] = originalPayloadWasString ? new JValue(payload.ToString(Formatting.None)) : payload.DeepClone();
                     return envelope.ToString(Formatting.Indented);
                 }
             }
-            catch {
-                // Fallback below.
-            }
+            catch { }
 
-            return payloadToken.ToString(Formatting.Indented);
+            return payload.ToString(Formatting.Indented);
         }
 
-        private void BackupFile(string fullPath) {
-            if (string.IsNullOrEmpty(fullPath) || !File.Exists(fullPath)) return;
-
-            string backupPath = $"{fullPath}.bak-{DateTime.Now:yyyyMMdd-HHmmss}";
-            File.Copy(fullPath, backupPath, true);
-        }
-
-        private void CreateNewDataConfigFile() {
-            if (_sourceMode != DataSourceMode.DataConfig) return;
-
-            Directory.CreateDirectory(ToAbsolutePath(DefaultDataConfigFolder));
-
-            string target = EditorUtility.SaveFilePanel(
-                "Create DataConfig JSON",
-                ToAbsolutePath(DefaultDataConfigFolder),
-                "new_config.json",
-                "json");
-
-            if (string.IsNullOrEmpty(target)) return;
-
-            if (!target.Replace('\\', '/').Contains("/Resources/DataConfig/")) {
-                EditorUtility.DisplayDialog("Invalid Path",
-                    "DataConfig file must be inside a Resources/DataConfig folder.", "OK");
+        private void SwitchView()
+        {
+            if (viewMode == ViewMode.Visual)
+            {
+                if (rootToken != null)
+                    editText = rootToken.ToString(Formatting.Indented);
+                viewMode = ViewMode.Text;
                 return;
             }
 
-            if (!File.Exists(target)) {
-                File.WriteAllText(target, "{\n  \"items\": []\n}\n", Encoding.UTF8);
+            try
+            {
+                rootToken = JToken.Parse(editText);
+                parseError = false;
+                parseErrorMessage = "";
+                viewMode = ViewMode.Visual;
             }
-
-            AssetDatabase.Refresh();
-            RefreshFileList();
-
-            int index = _files.FindIndex(f => string.Equals(f.FullPath, target, StringComparison.OrdinalIgnoreCase));
-            if (index >= 0) SelectFile(index);
-        }
-
-        private void DeleteAllSaveFiles() {
-            if (_sourceMode != DataSourceMode.Datasave || _files.Count == 0) return;
-
-            if (!EditorUtility.DisplayDialog("Delete All Saves",
-                    $"Delete all visible save files?\nCount: {_files.Count}\nBackup files are skipped.",
-                    "Delete", "Cancel")) return;
-
-            foreach (var file in _files.ToList()) {
-                try {
-                    BackupFile(file.FullPath);
-                    File.Delete(file.FullPath);
-                }
-                catch (Exception e) {
-                    Debug.LogException(e);
-                }
+            catch (Exception ex)
+            {
+                parseError = true;
+                parseErrorMessage = ex.Message;
+                viewMode = ViewMode.Visual;
             }
-
-            ClearCurrentFileState();
-            RefreshFileList();
-            SetStatus("Deleted all save files.", MessageType.Warning);
         }
 
-        private void CopyRemoteConfigJsonTemplate() {
-            if (_sourceMode != DataSourceMode.DataConfig) return;
+        private void ReloadCurrent()
+        {
+            if (!HasSelectedFile()) return;
+            if (isDirty && !EditorUtility.DisplayDialog(WindowTitle, "Discard unsaved changes?", "Reload", "Cancel")) return;
+            LoadFile(CurrentFile);
+        }
 
-            var obj = new JObject();
-
-            foreach (var file in _files) {
-                try {
-                    string key = Path.GetFileNameWithoutExtension(file.DisplayName).Replace('\\', '/');
-                    string json = JToken.Parse(File.ReadAllText(file.FullPath, Encoding.UTF8)).ToString(Formatting.None);
-                    obj[key] = json;
-                }
-                catch {
-                    // skip invalid config
-                }
+        private void FormatJson()
+        {
+            try
+            {
+                JToken token = JToken.Parse(viewMode == ViewMode.Text ? editText : rootToken.ToString(Formatting.None));
+                editText = token.ToString(Formatting.Indented);
+                rootToken = token;
+                MarkDirty();
+                SetStatus("Formatted.", MessageType.Info);
             }
-
-            EditorGUIUtility.systemCopyBuffer = obj.ToString(Formatting.Indented);
-            SetStatus("📋 Remote config JSON template copied to clipboard.", MessageType.Info);
+            catch (Exception ex)
+            {
+                SetStatus("Format failed: " + ex.Message, MessageType.Error);
+            }
         }
 
-        private void ClearCurrentFileState() {
-            _selectedIndex = -1;
-            _editText = "";
-            _loadedRawFile = "";
-            _isDirty = false;
-            _rootToken = null;
-            _parseError = false;
-            _parseErrorMsg = "";
-            _collapsed.Clear();
-            _columnWidths.Clear();
-            _tableScrolls.Clear();
-            _tableFilters.Clear();
-            _lastSortRules.Clear();
-            _lastSortLabels.Clear();
-            ClearSelection();
-        }
+        private bool ConfirmLeaveDirtyFile()
+        {
+            if (!isDirty) return true;
 
-        private bool ConfirmSwitchSource() {
-            if (!_isDirty) return true;
-
-            int result = EditorUtility.DisplayDialogComplex(
-                "Unsaved Changes",
-                "Current file has unsaved changes.",
-                "Save",
-                "Discard",
-                "Cancel");
-
-            if (result == 0) {
+            int result = EditorUtility.DisplayDialogComplex(WindowTitle, "Current file has unsaved changes.", "Save", "Discard", "Cancel");
+            if (result == 0)
+            {
                 SaveCurrent();
+                return !isDirty;
+            }
+
+            if (result == 1)
+            {
+                isDirty = false;
+                if (HasSelectedFile()) CurrentFile.Dirty = false;
                 return true;
             }
 
-            return result == 1;
-        }
-
-        private void OnDestroy() {
-            if (_isDirty && _selectedIndex >= 0 && _selectedIndex < _files.Count)
-                if (EditorUtility.DisplayDialog("Unsaved Changes",
-                        $"Save '{_files[_selectedIndex].DisplayName}' before closing?", "Save", "Discard"))
-                    SaveCurrent();
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  Path helpers
-        // ═══════════════════════════════════════════════════════════
-        private static string GetSaveDirectory() {
-            return Path.Combine(Application.persistentDataPath, SaveDirectoryName);
-        }
-
-        private static bool IsHiddenSaveFile(string path) {
-            if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return true;
-            if (path.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)) return true;
-            if (path.Contains(".bak-", StringComparison.OrdinalIgnoreCase)) return true;
             return false;
         }
 
-        private static string ToAbsolutePath(string path) {
-            if (Path.IsPathRooted(path)) return path;
-            return Path.GetFullPath(path);
+        private void MarkDirty()
+        {
+            isDirty = true;
+            if (HasSelectedFile()) CurrentFile.Dirty = true;
         }
 
-        private static string AbsoluteToAssetPath(string fullPath) {
-            fullPath = fullPath.Replace('\\', '/');
-            string dataPath = Application.dataPath.Replace('\\', '/');
-
-            if (!fullPath.StartsWith(dataPath, StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            return "Assets" + fullPath.Substring(dataPath.Length);
+        private void OnTokenChanged()
+        {
+            if (rootToken != null)
+                editText = rootToken.ToString(Formatting.Indented);
+            MarkDirty();
+            SetStatus("", MessageType.None);
         }
 
-        // ═══════════════════════════════════════════════════════════
-        //  JSON utilities
-        // ═══════════════════════════════════════════════════════════
-        private static bool TryParseJson(string text, out JToken result, out string error) {
-            result = null;
-            error = null;
-            if (string.IsNullOrWhiteSpace(text)) {
-                error = "Empty";
-                return false;
-            }
-
-            try {
-                result = JToken.Parse(text);
-                return true;
-            }
-            catch (JsonException e) {
-                error = e.Message;
-                return false;
-            }
+        private void ClearCurrentFile()
+        {
+            selectedFileIndex = -1;
+            rootToken = null;
+            editText = "";
+            originalRawFile = "";
+            isDirty = false;
+            parseError = false;
+            ClearVisualState();
         }
 
-        private static bool ValidateJson(string text, out string error) => TryParseJson(text, out _, out error);
-
-        private static string FormatJsonStr(string json) {
-            try {
-                return JToken.Parse(json).ToString(Formatting.Indented);
-            }
-            catch {
-                return json;
-            }
+        private void ClearVisualState()
+        {
+            collapsed.Clear();
+            tableScroll.Clear();
+            tableFilter.Clear();
+            columnWidths.Clear();
+            selectedTablePath = "";
+            selectedRowIndex = -1;
+            selectedColumnKey = "";
+            selectedCellRow = -1;
+            visualScroll = Vector2.zero;
+            textScroll = Vector2.zero;
         }
 
-        private void SetStatus(string msg, MessageType type) {
-            _statusMsg = msg;
-            _statusType = type;
+        private void ToggleCollapse(string path)
+        {
+            if (collapsed.Contains(path)) collapsed.Remove(path);
+            else collapsed.Add(path);
+        }
+
+        private bool HasSelectedFile()
+        {
+            return selectedFileIndex >= 0 && selectedFileIndex < files.Count;
+        }
+
+        private FileEntry CurrentFile
+        {
+            get { return HasSelectedFile() ? files[selectedFileIndex] : null; }
+        }
+
+        private void CreateNewConfig()
+        {
+            string folder = Path.GetFullPath(DefaultDataConfigFolder);
+            Directory.CreateDirectory(folder);
+
+            string name = "new_config.json";
+            string path = Path.Combine(folder, name);
+            int index = 1;
+            while (File.Exists(path))
+            {
+                name = "new_config_" + index + ".json";
+                path = Path.Combine(folder, name);
+                index++;
+            }
+
+            File.WriteAllText(path, "{\n  \"items\": []\n}\n", Encoding.UTF8);
+            AssetDatabase.Refresh();
+            RefreshFiles(false);
+            SetStatus("Created " + name, MessageType.Info);
+        }
+
+        private void OpenDataConfigFolder()
+        {
+            string folder = Path.GetFullPath(DefaultDataConfigFolder);
+            Directory.CreateDirectory(folder);
+            AssetDatabase.Refresh();
+            EditorUtility.RevealInFinder(folder);
+        }
+
+        private void OpenSaveFolder()
+        {
+            string folder = GetSaveDirectory();
+            Directory.CreateDirectory(folder);
+            EditorUtility.RevealInFinder(folder);
+        }
+
+        private void DeleteAllSaves()
+        {
+            if (sourceMode != SourceMode.Datasave) return;
+            if (!EditorUtility.DisplayDialog(WindowTitle, "Delete all save files?", "Delete", "Cancel")) return;
+
+            foreach (FileEntry file in files.ToList())
+            {
+                try
+                {
+                    if (autoBackup) Backup(file.FullPath);
+                    File.Delete(file.FullPath);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogException(ex);
+                }
+            }
+
+            ClearCurrentFile();
+            RefreshFiles(false);
+        }
+
+        private void Backup(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+            File.Copy(path, path + ".bak-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"), true);
+        }
+
+        private void RevealCurrent()
+        {
+            if (HasSelectedFile()) EditorUtility.RevealInFinder(CurrentFile.FullPath);
+        }
+
+        private void ShowFileContextMenu(int index)
+        {
+            if (index < 0 || index >= files.Count) return;
+            FileEntry file = files[index];
+            GenericMenu menu = new GenericMenu();
+
+            menu.AddItem(new GUIContent("Open"), false, delegate { SelectFile(index); });
+            menu.AddItem(new GUIContent("Reveal"), false, delegate { EditorUtility.RevealInFinder(file.FullPath); });
+            menu.AddItem(new GUIContent("Copy Path"), false, delegate { EditorGUIUtility.systemCopyBuffer = file.RelativePath; });
+            menu.ShowAsContext();
+        }
+
+        private void DrawStatus(Rect rect)
+        {
+            Color bg = statusType == MessageType.Error ? new Color(0.45f, 0.08f, 0.08f) :
+                statusType == MessageType.Warning ? new Color(0.38f, 0.30f, 0.06f) :
+                statusType == MessageType.Info ? new Color(0.08f, 0.28f, 0.45f) :
+                new Color(0.17f, 0.17f, 0.17f);
+
+            EditorGUI.DrawRect(rect, bg);
+            GUI.Label(new Rect(rect.x + 8, rect.y + 3, rect.width - 16, rect.height - 6), status, EditorStyles.miniLabel);
+        }
+
+        private void SetStatus(string msg, MessageType type)
+        {
+            status = msg ?? "";
+            statusType = type;
             Repaint();
         }
 
-
-        // ─── Multi-field sort popup ───────────────────────────
-        private class MultiFieldSortWindow : EditorWindow {
-            private List<string> _keys;
-            private List<SortRule> _rules;
-            private bool _canSortVisible;
-            private Action<List<SortRule>> _onApplyAll;
-            private Action<List<SortRule>> _onApplyVisible;
-            private Vector2 _scroll;
-
-            public static void Open(List<string> keys, List<SortRule> initialRules, bool canSortVisible,
-                Action<List<SortRule>> onApplyAll, Action<List<SortRule>> onApplyVisible) {
-                var w = CreateInstance<MultiFieldSortWindow>();
-                w.titleContent = new GUIContent("Sort Table By Fields");
-                w._keys = keys != null ? new List<string>(keys) : new List<string>();
-                w._rules = initialRules != null && initialRules.Count > 0
-                    ? initialRules.Select(r => r.Clone()).ToList()
-                    : new List<SortRule>();
-                if (w._rules.Count == 0 && w._keys.Count > 0)
-                    w._rules.Add(new SortRule { Key = w._keys[0], Ascending = true, Mode = SortValueMode.Auto, EmptyLast = true });
-                w._canSortVisible = canSortVisible;
-                w._onApplyAll = onApplyAll;
-                w._onApplyVisible = onApplyVisible;
-                w.minSize = new Vector2(640, 260);
-                w.ShowUtility();
-                w.Focus();
-            }
-
-            private void OnGUI() {
-                EditorGUILayout.LabelField("Sort priority: rule 1 runs first, then rule 2, then rule 3...", EditorStyles.boldLabel);
-                EditorGUILayout.HelpBox("Example: sort by rarity ASC, then level DESC, then price ASC. Empty/null values stay last unless you turn off Empty Last.", MessageType.Info);
-
-                _scroll = EditorGUILayout.BeginScrollView(_scroll);
-                for (int i = 0; i < _rules.Count; i++) {
-                    var rule = _rules[i];
-                    EditorGUILayout.BeginHorizontal();
-
-                    GUILayout.Label((i + 1).ToString(), GUILayout.Width(24));
-
-                    int keyIndex = Mathf.Max(0, _keys.IndexOf(rule.Key));
-                    int nextKeyIndex = EditorGUILayout.Popup(keyIndex, _keys.ToArray(), GUILayout.MinWidth(170));
-                    if (_keys.Count > 0) rule.Key = _keys[Mathf.Clamp(nextKeyIndex, 0, _keys.Count - 1)];
-
-                    rule.Mode = (SortValueMode)EditorGUILayout.EnumPopup(rule.Mode, GUILayout.Width(92));
-                    rule.Ascending = GUILayout.Toggle(rule.Ascending, rule.Ascending ? "ASC" : "DESC", EditorStyles.miniButton, GUILayout.Width(64));
-                    rule.EmptyLast = GUILayout.Toggle(rule.EmptyLast, "Empty Last", EditorStyles.miniButton, GUILayout.Width(86));
-
-                    using (new EditorGUI.DisabledScope(i <= 0)) {
-                        if (GUILayout.Button("↑", EditorStyles.miniButton, GUILayout.Width(28))) {
-                            (_rules[i - 1], _rules[i]) = (_rules[i], _rules[i - 1]);
-                            GUI.FocusControl(null);
-                        }
-                    }
-
-                    using (new EditorGUI.DisabledScope(i >= _rules.Count - 1)) {
-                        if (GUILayout.Button("↓", EditorStyles.miniButton, GUILayout.Width(28))) {
-                            (_rules[i + 1], _rules[i]) = (_rules[i], _rules[i + 1]);
-                            GUI.FocusControl(null);
-                        }
-                    }
-
-                    var old = GUI.color;
-                    GUI.color = new Color(1f, 0.55f, 0.55f);
-                    if (GUILayout.Button("✕", EditorStyles.miniButton, GUILayout.Width(28))) {
-                        _rules.RemoveAt(i);
-                        GUI.color = old;
-                        EditorGUILayout.EndHorizontal();
-                        break;
-                    }
-                    GUI.color = old;
-
-                    EditorGUILayout.EndHorizontal();
-                }
-                EditorGUILayout.EndScrollView();
-
-                GUILayout.Space(6);
-                EditorGUILayout.BeginHorizontal();
-                if (GUILayout.Button("+ Add Rule", GUILayout.Width(100))) {
-                    string key = _keys.Count > 0 ? _keys[0] : "";
-                    _rules.Add(new SortRule { Key = key, Ascending = true, Mode = SortValueMode.Auto, EmptyLast = true });
-                }
-
-                if (GUILayout.Button("Clear Rules", GUILayout.Width(100))) _rules.Clear();
-
-                GUILayout.FlexibleSpace();
-
-                if (GUILayout.Button("Cancel", GUILayout.Width(90))) Close();
-
-                using (new EditorGUI.DisabledScope(_rules.Count == 0 || !_canSortVisible)) {
-                    if (GUILayout.Button("Apply Visible", GUILayout.Width(110))) {
-                        _onApplyVisible?.Invoke(CloneRules());
-                        Close();
-                    }
-                }
-
-                using (new EditorGUI.DisabledScope(_rules.Count == 0)) {
-                    if (GUILayout.Button("Apply All", GUILayout.Width(100))) {
-                        _onApplyAll?.Invoke(CloneRules());
-                        Close();
-                    }
-                }
-
-                EditorGUILayout.EndHorizontal();
-            }
-
-            private List<SortRule> CloneRules() {
-                return _rules.Where(r => r != null && !string.IsNullOrWhiteSpace(r.Key)).Select(r => r.Clone()).ToList();
-            }
+        private static string GetSaveDirectory()
+        {
+            return Path.Combine(Application.persistentDataPath, SaveDirectoryName);
         }
 
-        // ─── Small popup window for adding fields ─────────────────
-        private class StringInputWindow : EditorWindow {
-            private string _label;
-            private string _value;
-            private Action<string> _onApply;
+        private static string NormalizePath(string path)
+        {
+            return path.Replace('\\', '/');
+        }
 
-            public static void Open(string title, string label, string initial, Action<string> onApply) {
-                var w = CreateInstance<StringInputWindow>();
+        private static bool IsVisibleSave(string path)
+        {
+            return File.Exists(path) &&
+                   !path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) &&
+                   !path.EndsWith(".bak", StringComparison.OrdinalIgnoreCase) &&
+                   path.IndexOf(".bak-", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        private sealed class StringInputWindow : EditorWindow
+        {
+            private string label;
+            private string value;
+            private Action<string> onApply;
+
+            public static void Open(string title, string labelText, string initial, Action<string> apply)
+            {
+                StringInputWindow w = CreateInstance<StringInputWindow>();
                 w.titleContent = new GUIContent(title);
-                w._label = label;
-                w._value = initial ?? "";
-                w._onApply = onApply;
-                w.minSize = new Vector2(320, 82);
-                w.maxSize = new Vector2(420, 82);
+                w.label = labelText;
+                w.value = initial ?? "";
+                w.onApply = apply;
+                w.minSize = new Vector2(340, 92);
                 w.ShowUtility();
                 w.Focus();
             }
 
-            private void OnGUI() {
+            private void OnGUI()
+            {
                 GUILayout.Space(8);
-                GUILayout.Label(_label, EditorStyles.boldLabel);
+                GUILayout.Label(label, EditorStyles.boldLabel);
                 GUI.SetNextControlName("input");
-                _value = EditorGUILayout.TextField(_value);
+                value = EditorGUILayout.TextField(value);
+
                 GUILayout.FlexibleSpace();
                 GUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Cancel", GUILayout.Width(80))) Close();
-                if (GUILayout.Button("Apply", GUILayout.Width(80))) {
-                    _onApply?.Invoke(_value);
+
+                if (GUILayout.Button("Cancel", GUILayout.Width(82))) Close();
+                if (GUILayout.Button("Apply", GUILayout.Width(82)))
+                {
+                    onApply?.Invoke(value);
                     Close();
                 }
+
                 GUILayout.EndHorizontal();
 
-                if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return) {
-                    _onApply?.Invoke(_value);
+                if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return)
+                {
+                    onApply?.Invoke(value);
                     Close();
                     Event.current.Use();
                 }
@@ -3533,76 +2146,70 @@ namespace Dreamy.EditorTools {
             }
         }
 
-        // ─── JSON object/array cell editor ────────────────────────
-        private class JsonTokenEditWindow : EditorWindow {
-            private string _text;
-            private Vector2 _scroll;
-            private Action<JToken> _onApply;
-            private GUIStyle _textStyle;
-            private string _error;
+        private sealed class JsonTokenEditWindow : EditorWindow
+        {
+            private string text;
+            private Vector2 scroll;
+            private Action<JToken> onApply;
+            private string error;
+            private GUIStyle style;
 
-            public static void Open(JToken token, Action<JToken> onApply) {
-                var w = CreateInstance<JsonTokenEditWindow>();
-                w.titleContent = new GUIContent(token.Type == JTokenType.Array ? "Edit JSON Array" : "Edit JSON Object");
-                w._text = token.ToString(Formatting.Indented);
-                w._onApply = onApply;
-                w.minSize = new Vector2(520, 360);
+            public static void Open(JToken token, Action<JToken> apply)
+            {
+                JsonTokenEditWindow w = CreateInstance<JsonTokenEditWindow>();
+                w.titleContent = new GUIContent("Edit JSON Value");
+                w.text = (token ?? JValue.CreateNull()).ToString(Formatting.Indented);
+                w.onApply = apply;
+                w.minSize = new Vector2(540, 380);
                 w.ShowUtility();
                 w.Focus();
             }
 
-            private void OnGUI() {
-                if (_textStyle == null) {
-                    _textStyle = new GUIStyle(EditorStyles.textArea)
-                    {
-                        font = GetMonoFont(),
-                        fontSize = 12,
-                        wordWrap = false
-                    };
-                }
+            private void OnGUI()
+            {
+                if (style == null)
+                    style = new GUIStyle(EditorStyles.textArea) { font = GetMonoFont(), fontSize = 12, wordWrap = false };
 
-                EditorGUILayout.LabelField("Edit nested JSON value", EditorStyles.boldLabel);
-                _scroll = EditorGUILayout.BeginScrollView(_scroll);
-                _text = EditorGUILayout.TextArea(_text, _textStyle, GUILayout.ExpandHeight(true));
+                scroll = EditorGUILayout.BeginScrollView(scroll);
+                text = EditorGUILayout.TextArea(text, style, GUILayout.ExpandHeight(true));
                 EditorGUILayout.EndScrollView();
 
-                if (!string.IsNullOrEmpty(_error))
-                    EditorGUILayout.HelpBox(_error, MessageType.Error);
+                if (!string.IsNullOrEmpty(error))
+                    EditorGUILayout.HelpBox(error, MessageType.Error);
 
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button("Format", GUILayout.Width(90))) {
-                    try {
-                        _text = JToken.Parse(_text).ToString(Formatting.Indented);
-                        _error = "";
+
+                if (GUILayout.Button("Format", GUILayout.Width(90)))
+                {
+                    try
+                    {
+                        text = JToken.Parse(text).ToString(Formatting.Indented);
+                        error = "";
                     }
-                    catch (Exception e) { _error = e.Message; }
+                    catch (Exception ex)
+                    {
+                        error = ex.Message;
+                    }
                 }
 
                 GUILayout.FlexibleSpace();
 
                 if (GUILayout.Button("Cancel", GUILayout.Width(90))) Close();
-                if (GUILayout.Button("Apply", GUILayout.Width(90))) {
-                    try {
-                        var parsed = JToken.Parse(_text);
-                        _onApply?.Invoke(parsed);
+                if (GUILayout.Button("Apply", GUILayout.Width(90)))
+                {
+                    try
+                    {
+                        onApply?.Invoke(JToken.Parse(text));
                         Close();
                     }
-                    catch (Exception e) {
-                        _error = e.Message;
+                    catch (Exception ex)
+                    {
+                        error = ex.Message;
                     }
                 }
 
                 GUILayout.EndHorizontal();
             }
-        }
-
-        // ─── Data model ───────────────────────────────────────────
-        private class JsonFileEntry {
-            public string FullPath;
-            public string RelativePath;
-            public string DisplayName;
-            public bool IsDirty;
-            public DataSourceMode Source;
         }
     }
 }
