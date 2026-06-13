@@ -13,11 +13,12 @@ namespace Dreamy.EditorTools.Scene
 {
     /// <summary>
     /// Adds Dreamy scene controls around Unity's main Play/Pause controls.
-    /// Scene controls are inserted on the left side of the Play controls.
-    /// Time scale controls are inserted on the right side of the Play controls.
     ///
-    /// Note: Unity does not expose a public API for extending the main editor toolbar,
-    /// so this uses reflection against UnityEditor.Toolbar.
+    /// Scene controls are inserted before Unity Play/Pause/Step.
+    /// Time scale controls are inserted after Unity Play/Pause/Step.
+    ///
+    /// This uses IMGUIContainer with Unity toolbar styles to avoid broken UI Toolkit
+    /// text/background rendering inside the internal main toolbar.
     /// </summary>
     [InitializeOnLoad]
     public static class DreamyMainPlayToolbar
@@ -28,6 +29,10 @@ namespace Dreamy.EditorTools.Scene
 
         private const string PlayFromBootstrapKeyPrefix =
             "Dreamy.EditorTools.PlayFromBootstrap.";
+
+        private const float SceneToolbarWidth = 388f;
+        private const float TimeToolbarWidth = 106f;
+        private const float ToolbarHeight = 22f;
 
         private static readonly Type ToolbarType =
             typeof(Editor).Assembly.GetType("UnityEditor.Toolbar");
@@ -50,11 +55,8 @@ namespace Dreamy.EditorTools.Scene
         private static VisualElement sceneRoot;
         private static VisualElement timeRoot;
 
-        private static PopupField<string> scenePopup;
-        private static PopupField<string> timeScalePopup;
-        private static Toggle bootstrapToggle;
-
-        private static bool isRefreshingUi;
+        private static IMGUIContainer sceneGui;
+        private static IMGUIContainer timeGui;
 
         static DreamyMainPlayToolbar()
         {
@@ -73,7 +75,7 @@ namespace Dreamy.EditorTools.Scene
 
             if (EditorApplication.isPlaying)
             {
-                RefreshTimeScalePopup();
+                RepaintToolbar();
             }
         }
 
@@ -113,34 +115,35 @@ namespace Dreamy.EditorTools.Scene
 
             VisualElement playZone = toolbarRoot.Q<VisualElement>("ToolbarZonePlayMode");
 
+            if (playZone != null)
+            {
+                sceneRoot = CreateSceneToolbarContent();
+                timeRoot = CreateTimeToolbarContent();
+
+                playZone.Insert(0, sceneRoot);
+                playZone.Add(timeRoot);
+
+                ApplyPlayModeStartScene();
+                RepaintToolbar();
+                return;
+            }
+
+            VisualElement leftZone = toolbarRoot.Q<VisualElement>("ToolbarZoneLeftAlign");
+            VisualElement rightZone = toolbarRoot.Q<VisualElement>("ToolbarZoneRightAlign");
+
+            if (leftZone == null && rightZone == null)
+            {
+                return;
+            }
+
             sceneRoot = CreateSceneToolbarContent();
             timeRoot = CreateTimeToolbarContent();
 
-            if (playZone != null)
-            {
-                // Insert scene controls before Unity Play/Pause/Step.
-                playZone.Insert(0, sceneRoot);
+            leftZone?.Add(sceneRoot);
+            rightZone?.Insert(0, timeRoot);
 
-                // Add time controls after Unity Play/Pause/Step.
-                playZone.Add(timeRoot);
-            }
-            else
-            {
-                // Fallback for Unity versions/layouts where ToolbarZonePlayMode is unavailable.
-                VisualElement leftZone = toolbarRoot.Q<VisualElement>("ToolbarZoneLeftAlign");
-                VisualElement rightZone = toolbarRoot.Q<VisualElement>("ToolbarZoneRightAlign");
-
-                if (leftZone == null && rightZone == null)
-                {
-                    return;
-                }
-
-                leftZone?.Add(sceneRoot);
-                rightZone?.Insert(0, timeRoot);
-            }
-
-            RefreshUi();
             ApplyPlayModeStartScene();
+            RepaintToolbar();
         }
 
         private static VisualElement GetToolbarRoot(ScriptableObject toolbar)
@@ -177,84 +180,37 @@ namespace Dreamy.EditorTools.Scene
 
         private static VisualElement CreateSceneToolbarContent()
         {
-            VisualElement root = CreateGroupRoot(SceneRootElementName);
-            root.style.marginRight = 5f;
+            VisualElement root = CreateRoot(SceneRootElementName, SceneToolbarWidth);
+            root.style.marginRight = 4f;
 
-            root.Add(CreateToolbarButton(
-                "Prev",
-                "Open previous enabled Build Settings scene",
-                OpenPreviousScene,
-                42f));
-
-            List<EditorBuildSettingsScene> scenes = GetEnabledScenes();
-            List<string> sceneLabels = GetSceneLabels(scenes);
-
-            scenePopup = new PopupField<string>(
-                sceneLabels,
-                GetSafeCurrentSceneIndex(scenes))
+            sceneGui = new IMGUIContainer(DrawSceneToolbarGui)
             {
-                tooltip = "Open an enabled Build Settings scene"
+                name = "DreamySceneToolbarIMGUI"
             };
-            ApplyPopupStyle(scenePopup, 168f);
-            scenePopup.RegisterValueChangedCallback(OnScenePopupChanged);
-            root.Add(scenePopup);
+            sceneGui.style.width = SceneToolbarWidth;
+            sceneGui.style.height = ToolbarHeight;
 
-            root.Add(CreateToolbarButton(
-                "Reload",
-                "Reload current scene",
-                ReloadCurrentScene,
-                56f));
-
-            root.Add(CreateToolbarButton(
-                "Next",
-                "Open next enabled Build Settings scene",
-                OpenNextScene,
-                42f));
-
-            bootstrapToggle = new Toggle("Bootstrap")
-            {
-                value = EditorPrefs.GetBool(
-                    GetProjectScopedPlayFromBootstrapKey(),
-                    false),
-                tooltip = "Start Play Mode from the first enabled Build Settings scene"
-            };
-            ApplyToggleStyle(bootstrapToggle, 92f);
-            bootstrapToggle.RegisterValueChangedCallback(change =>
-                SetPlayFromBootstrap(change.newValue));
-            root.Add(bootstrapToggle);
-
-            ScheduleStyleRefresh(root);
-
+            root.Add(sceneGui);
             return root;
         }
 
         private static VisualElement CreateTimeToolbarContent()
         {
-            VisualElement root = CreateGroupRoot(TimeRootElementName);
-            root.style.marginLeft = 5f;
+            VisualElement root = CreateRoot(TimeRootElementName, TimeToolbarWidth);
+            root.style.marginLeft = 4f;
 
-            Label timeLabel = new Label("Time");
-            ApplyLabelStyle(timeLabel, 34f);
-            root.Add(timeLabel);
-
-            List<string> timeScaleLabels = GetTimeScaleLabels();
-
-            timeScalePopup = new PopupField<string>(
-                timeScaleLabels,
-                GetTimeScaleIndex())
+            timeGui = new IMGUIContainer(DrawTimeToolbarGui)
             {
-                tooltip = "Change Time.timeScale in Play Mode"
+                name = "DreamyTimeToolbarIMGUI"
             };
-            ApplyPopupStyle(timeScalePopup, 70f);
-            timeScalePopup.RegisterValueChangedCallback(OnTimeScalePopupChanged);
-            root.Add(timeScalePopup);
+            timeGui.style.width = TimeToolbarWidth;
+            timeGui.style.height = ToolbarHeight;
 
-            ScheduleStyleRefresh(root);
-
+            root.Add(timeGui);
             return root;
         }
 
-        private static VisualElement CreateGroupRoot(string name)
+        private static VisualElement CreateRoot(string name, float width)
         {
             VisualElement root = new VisualElement
             {
@@ -263,218 +219,109 @@ namespace Dreamy.EditorTools.Scene
 
             root.style.flexDirection = FlexDirection.Row;
             root.style.alignItems = Align.Center;
-            root.style.height = 24f;
+            root.style.width = width;
+            root.style.height = ToolbarHeight;
             root.style.flexShrink = 0f;
-            root.style.paddingLeft = 4f;
-            root.style.paddingRight = 4f;
-            root.style.paddingTop = 1f;
-            root.style.paddingBottom = 1f;
-
-            Color groupColor = EditorGUIUtility.isProSkin
-                ? new Color(0.18f, 0.18f, 0.18f, 0.65f)
-                : new Color(0.76f, 0.76f, 0.76f, 0.55f);
-
-            Color borderColor = EditorGUIUtility.isProSkin
-                ? new Color(0.08f, 0.08f, 0.08f, 0.85f)
-                : new Color(0.52f, 0.52f, 0.52f, 0.85f);
-
-            root.style.backgroundColor = groupColor;
-            root.style.borderTopColor = borderColor;
-            root.style.borderBottomColor = borderColor;
-            root.style.borderLeftColor = borderColor;
-            root.style.borderRightColor = borderColor;
-            root.style.borderTopWidth = 1f;
-            root.style.borderBottomWidth = 1f;
-            root.style.borderLeftWidth = 1f;
-            root.style.borderRightWidth = 1f;
-            root.style.borderTopLeftRadius = 4f;
-            root.style.borderTopRightRadius = 4f;
-            root.style.borderBottomLeftRadius = 4f;
-            root.style.borderBottomRightRadius = 4f;
+            root.style.marginTop = 0f;
+            root.style.marginBottom = 0f;
+            root.style.paddingLeft = 0f;
+            root.style.paddingRight = 0f;
+            root.style.paddingTop = 0f;
+            root.style.paddingBottom = 0f;
 
             return root;
         }
 
-        private static Button CreateToolbarButton(
-            string text,
-            string tooltip,
-            Action action,
-            float width)
+        private static void DrawSceneToolbarGui()
         {
-            Button button = new Button(action)
-            {
-                text = text,
-                tooltip = tooltip
-            };
-
-            ApplyButtonStyle(button, width);
-            return button;
-        }
-
-        private static void ApplyButtonStyle(Button button, float width)
-        {
-            button.style.width = width;
-            button.style.height = 20f;
-            button.style.marginLeft = 1f;
-            button.style.marginRight = 1f;
-            button.style.paddingLeft = 4f;
-            button.style.paddingRight = 4f;
-            button.style.paddingTop = 0f;
-            button.style.paddingBottom = 0f;
-            button.style.unityTextAlign = TextAnchor.MiddleCenter;
-            button.style.fontSize = 11f;
-            button.style.color = GetTextColor();
-
-            button.style.backgroundColor = EditorGUIUtility.isProSkin
-                ? new Color(0.28f, 0.28f, 0.28f, 1f)
-                : new Color(0.88f, 0.88f, 0.88f, 1f);
-
-            Color borderColor = EditorGUIUtility.isProSkin
-                ? new Color(0.10f, 0.10f, 0.10f, 1f)
-                : new Color(0.56f, 0.56f, 0.56f, 1f);
-
-            button.style.borderTopColor = borderColor;
-            button.style.borderBottomColor = borderColor;
-            button.style.borderLeftColor = borderColor;
-            button.style.borderRightColor = borderColor;
-            button.style.borderTopWidth = 1f;
-            button.style.borderBottomWidth = 1f;
-            button.style.borderLeftWidth = 1f;
-            button.style.borderRightWidth = 1f;
-            button.style.borderTopLeftRadius = 3f;
-            button.style.borderTopRightRadius = 3f;
-            button.style.borderBottomLeftRadius = 3f;
-            button.style.borderBottomRightRadius = 3f;
-        }
-
-        private static void ApplyPopupStyle(PopupField<string> popup, float width)
-        {
-            popup.style.width = width;
-            popup.style.height = 20f;
-            popup.style.marginLeft = 2f;
-            popup.style.marginRight = 2f;
-            popup.style.paddingTop = 0f;
-            popup.style.paddingBottom = 0f;
-            popup.style.fontSize = 11f;
-            popup.style.color = GetTextColor();
-            popup.style.unityTextAlign = TextAnchor.MiddleLeft;
-
-            popup.labelElement.style.display = DisplayStyle.None;
-
-            popup.style.backgroundColor = EditorGUIUtility.isProSkin
-                ? new Color(0.24f, 0.24f, 0.24f, 1f)
-                : new Color(0.92f, 0.92f, 0.92f, 1f);
-
-            Color borderColor = EditorGUIUtility.isProSkin
-                ? new Color(0.10f, 0.10f, 0.10f, 1f)
-                : new Color(0.56f, 0.56f, 0.56f, 1f);
-
-            popup.style.borderTopColor = borderColor;
-            popup.style.borderBottomColor = borderColor;
-            popup.style.borderLeftColor = borderColor;
-            popup.style.borderRightColor = borderColor;
-            popup.style.borderTopWidth = 1f;
-            popup.style.borderBottomWidth = 1f;
-            popup.style.borderLeftWidth = 1f;
-            popup.style.borderRightWidth = 1f;
-            popup.style.borderTopLeftRadius = 3f;
-            popup.style.borderTopRightRadius = 3f;
-            popup.style.borderBottomLeftRadius = 3f;
-            popup.style.borderBottomRightRadius = 3f;
-        }
-
-        private static void ApplyToggleStyle(Toggle toggle, float width)
-        {
-            toggle.style.width = width;
-            toggle.style.height = 20f;
-            toggle.style.marginLeft = 4f;
-            toggle.style.marginRight = 1f;
-            toggle.style.fontSize = 11f;
-            toggle.style.color = GetTextColor();
-            toggle.labelElement.style.color = GetTextColor();
-            toggle.labelElement.style.unityTextAlign = TextAnchor.MiddleLeft;
-        }
-
-        private static void ApplyLabelStyle(Label label, float width)
-        {
-            label.style.width = width;
-            label.style.height = 20f;
-            label.style.fontSize = 11f;
-            label.style.color = GetTextColor();
-            label.style.unityTextAlign = TextAnchor.MiddleCenter;
-        }
-
-        private static void ScheduleStyleRefresh(VisualElement root)
-        {
-            root.schedule.Execute(() => ApplyTextColorRecursively(root)).ExecuteLater(50);
-            root.schedule.Execute(() => ApplyTextColorRecursively(root)).ExecuteLater(500);
-        }
-
-        private static void ApplyTextColorRecursively(VisualElement element)
-        {
-            if (element == null)
-            {
-                return;
-            }
-
-            element.style.color = GetTextColor();
-
-            foreach (VisualElement child in element.Children())
-            {
-                ApplyTextColorRecursively(child);
-            }
-        }
-
-        private static Color GetTextColor()
-        {
-            return EditorGUIUtility.isProSkin
-                ? new Color(0.88f, 0.90f, 0.94f, 1f)
-                : new Color(0.08f, 0.08f, 0.08f, 1f);
-        }
-
-        private static void OnScenePopupChanged(ChangeEvent<string> change)
-        {
-            if (isRefreshingUi)
-            {
-                return;
-            }
-
             List<EditorBuildSettingsScene> scenes = GetEnabledScenes();
             List<string> labels = GetSceneLabels(scenes);
+            int currentIndex = GetSafeCurrentSceneIndex(scenes);
 
-            int index = labels.IndexOf(change.newValue);
+            GUILayout.BeginHorizontal(GUILayout.Width(SceneToolbarWidth), GUILayout.Height(ToolbarHeight));
 
-            if (index < 0 || index >= scenes.Count)
+            using (new EditorGUI.DisabledScope(scenes.Count == 0))
             {
-                RefreshUi();
-                return;
+                if (GUILayout.Button("Prev", EditorStyles.toolbarButton, GUILayout.Width(38f), GUILayout.Height(20f)))
+                {
+                    OpenPreviousScene();
+                }
+
+                EditorGUI.BeginChangeCheck();
+                int nextIndex = EditorGUILayout.Popup(
+                    currentIndex,
+                    labels.ToArray(),
+                    EditorStyles.toolbarPopup,
+                    GUILayout.Width(150f),
+                    GUILayout.Height(20f));
+
+                if (EditorGUI.EndChangeCheck() &&
+                    nextIndex >= 0 &&
+                    nextIndex < scenes.Count)
+                {
+                    OpenScene(scenes[nextIndex].path);
+                }
+
+                if (GUILayout.Button("Reload", EditorStyles.toolbarButton, GUILayout.Width(54f), GUILayout.Height(20f)))
+                {
+                    ReloadCurrentScene();
+                }
+
+                if (GUILayout.Button("Next", EditorStyles.toolbarButton, GUILayout.Width(38f), GUILayout.Height(20f)))
+                {
+                    OpenNextScene();
+                }
             }
 
-            OpenScene(scenes[index].path);
+            bool bootstrapEnabled = EditorPrefs.GetBool(
+                GetProjectScopedPlayFromBootstrapKey(),
+                false);
+
+            EditorGUI.BeginChangeCheck();
+            bool nextBootstrapEnabled = GUILayout.Toggle(
+                bootstrapEnabled,
+                "Bootstrap",
+                EditorStyles.toolbarButton,
+                GUILayout.Width(88f),
+                GUILayout.Height(20f));
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                SetPlayFromBootstrap(nextBootstrapEnabled);
+            }
+
+            GUILayout.EndHorizontal();
         }
 
-        private static void OnTimeScalePopupChanged(ChangeEvent<string> change)
+        private static void DrawTimeToolbarGui()
         {
-            if (isRefreshingUi)
+            List<string> labels = GetTimeScaleLabels();
+            int currentIndex = GetTimeScaleIndex();
+
+            GUILayout.BeginHorizontal(GUILayout.Width(TimeToolbarWidth), GUILayout.Height(ToolbarHeight));
+
+            GUILayout.Label("Time", EditorStyles.miniLabel, GUILayout.Width(32f), GUILayout.Height(20f));
+
+            using (new EditorGUI.DisabledScope(!EditorApplication.isPlaying))
             {
-                return;
+                EditorGUI.BeginChangeCheck();
+                int nextIndex = EditorGUILayout.Popup(
+                    currentIndex,
+                    labels.ToArray(),
+                    EditorStyles.toolbarPopup,
+                    GUILayout.Width(66f),
+                    GUILayout.Height(20f));
+
+                if (EditorGUI.EndChangeCheck() &&
+                    EditorApplication.isPlaying &&
+                    nextIndex >= 0 &&
+                    nextIndex < TimeScales.Length)
+                {
+                    Time.timeScale = TimeScales[nextIndex];
+                }
             }
 
-            int index = GetTimeScaleLabels().IndexOf(change.newValue);
-
-            if (index < 0)
-            {
-                return;
-            }
-
-            if (!EditorApplication.isPlaying)
-            {
-                RefreshTimeScalePopup();
-                Debug.LogWarning("Dreamy Play Toolbar: Time scale can only be changed in Play Mode.");
-                return;
-            }
-
-            Time.timeScale = TimeScales[index];
+            GUILayout.EndHorizontal();
         }
 
         private static void OpenPreviousScene()
@@ -536,81 +383,18 @@ namespace Dreamy.EditorTools.Scene
                     SceneManager.LoadScene(Path.GetFileNameWithoutExtension(path));
                 }
 
-                EditorApplication.delayCall += RefreshUi;
+                EditorApplication.delayCall += RepaintToolbar;
                 return;
             }
 
             if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
             {
-                RefreshUi();
+                RepaintToolbar();
                 return;
             }
 
             EditorSceneManager.OpenScene(path);
-            EditorApplication.delayCall += RefreshUi;
-        }
-
-        private static void RefreshUi()
-        {
-            isRefreshingUi = true;
-
-            RefreshScenePopup();
-            RefreshBootstrapToggle();
-            RefreshTimeScalePopup();
-
-            if (sceneRoot != null)
-            {
-                ApplyTextColorRecursively(sceneRoot);
-            }
-
-            if (timeRoot != null)
-            {
-                ApplyTextColorRecursively(timeRoot);
-            }
-
-            isRefreshingUi = false;
-        }
-
-        private static void RefreshScenePopup()
-        {
-            if (scenePopup == null)
-            {
-                return;
-            }
-
-            List<EditorBuildSettingsScene> scenes = GetEnabledScenes();
-            List<string> labels = GetSceneLabels(scenes);
-            int sceneIndex = GetSafeCurrentSceneIndex(scenes);
-
-            scenePopup.choices = labels;
-            scenePopup.SetValueWithoutNotify(labels[sceneIndex]);
-            scenePopup.SetEnabled(scenes.Count > 0);
-        }
-
-        private static void RefreshBootstrapToggle()
-        {
-            if (bootstrapToggle == null)
-            {
-                return;
-            }
-
-            bootstrapToggle.SetValueWithoutNotify(EditorPrefs.GetBool(
-                GetProjectScopedPlayFromBootstrapKey(),
-                false));
-        }
-
-        private static void RefreshTimeScalePopup()
-        {
-            if (timeScalePopup == null)
-            {
-                return;
-            }
-
-            List<string> labels = GetTimeScaleLabels();
-
-            timeScalePopup.choices = labels;
-            timeScalePopup.SetValueWithoutNotify(labels[GetTimeScaleIndex()]);
-            timeScalePopup.SetEnabled(EditorApplication.isPlaying);
+            EditorApplication.delayCall += RepaintToolbar;
         }
 
         internal static void SetPlayFromBootstrap(bool enabled)
@@ -629,6 +413,8 @@ namespace Dreamy.EditorTools.Scene
             EditorSceneManager.playModeStartScene = bootstrap == null
                 ? null
                 : AssetDatabase.LoadAssetAtPath<SceneAsset>(bootstrap.path);
+
+            RepaintToolbar();
         }
 
         private static void ApplyPlayModeStartScene()
@@ -650,27 +436,33 @@ namespace Dreamy.EditorTools.Scene
                 ApplyPlayModeStartScene();
             }
 
-            RefreshUi();
+            RepaintToolbar();
         }
 
         private static void OnEditorActiveSceneChanged(
             UnityEngine.SceneManagement.Scene oldScene,
             UnityEngine.SceneManagement.Scene newScene)
         {
-            EditorApplication.delayCall += RefreshUi;
+            EditorApplication.delayCall += RepaintToolbar;
         }
 
         private static void OnRuntimeActiveSceneChanged(
             UnityEngine.SceneManagement.Scene oldScene,
             UnityEngine.SceneManagement.Scene newScene)
         {
-            EditorApplication.delayCall += RefreshUi;
+            EditorApplication.delayCall += RepaintToolbar;
         }
 
         private static void OnBuildSettingsSceneListChanged()
         {
-            EditorApplication.delayCall += RefreshUi;
+            EditorApplication.delayCall += RepaintToolbar;
             EditorApplication.delayCall += ApplyPlayModeStartScene;
+        }
+
+        private static void RepaintToolbar()
+        {
+            sceneGui?.MarkDirtyRepaint();
+            timeGui?.MarkDirtyRepaint();
         }
 
         private static int GetCurrentSceneIndex()
