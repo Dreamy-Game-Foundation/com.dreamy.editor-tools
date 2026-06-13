@@ -316,9 +316,15 @@ namespace Dreamy.EditorTools.Scene
             if (EditorApplication.isPlaying)
             {
                 int buildIndex = SceneUtility.GetBuildIndexByScenePath(path);
-                SceneManager.LoadScene(buildIndex >= 0
-                    ? buildIndex
-                    : Path.GetFileNameWithoutExtension(path));
+                if (buildIndex >= 0)
+                {
+                    SceneManager.LoadScene(buildIndex);
+                }
+                else
+                {
+                    SceneManager.LoadScene(
+                        Path.GetFileNameWithoutExtension(path));
+                }
                 EditorApplication.delayCall += RefreshUi;
                 return;
             }
