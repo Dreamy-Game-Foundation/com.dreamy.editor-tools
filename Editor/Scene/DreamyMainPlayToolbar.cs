@@ -29,9 +29,13 @@ namespace Dreamy.EditorTools.Scene
 
         private const string PlayFromBootstrapKeyPrefix =
             "Dreamy.EditorTools.PlayFromBootstrap.";
+        private const string StartScenePathKeyPrefix =
+            "Dreamy.EditorTools.StartScenePath.";
+        private const string TimeScaleKeyPrefix =
+            "Dreamy.EditorTools.TimeScale.";
 
-        private const float SceneToolbarWidth = 388f;
-        private const float TimeToolbarWidth = 106f;
+        private const float SceneToolbarWidth = 390f;
+        private const float TimeToolbarWidth = 150f;
         private const float ToolbarHeight = 22f;
 
         private static readonly Type ToolbarType =
@@ -273,21 +277,16 @@ namespace Dreamy.EditorTools.Scene
                 }
             }
 
-            bool bootstrapEnabled = EditorPrefs.GetBool(
-                GetProjectScopedPlayFromBootstrapKey(),
-                false);
-
-            EditorGUI.BeginChangeCheck();
-            bool nextBootstrapEnabled = GUILayout.Toggle(
-                bootstrapEnabled,
-                "Bootstrap",
-                EditorStyles.toolbarButton,
-                GUILayout.Width(88f),
-                GUILayout.Height(20f));
-
-            if (EditorGUI.EndChangeCheck())
+            if (GUILayout.Button(
+                    "Start Scene",
+                    EditorStyles.toolbarButton,
+                    GUILayout.Width(90f),
+                    GUILayout.Height(20f)))
             {
-                SetPlayFromBootstrap(nextBootstrapEnabled);
+                Rect buttonRect = GUILayoutUtility.GetLastRect();
+                PopupWindow.Show(
+                    GUIUtility.GUIToScreenRect(buttonRect),
+                    new StartScenePopup());
             }
 
             GUILayout.EndHorizontal();
@@ -302,23 +301,28 @@ namespace Dreamy.EditorTools.Scene
 
             GUILayout.Label("Time", EditorStyles.miniLabel, GUILayout.Width(32f), GUILayout.Height(20f));
 
-            using (new EditorGUI.DisabledScope(!EditorApplication.isPlaying))
-            {
-                EditorGUI.BeginChangeCheck();
-                int nextIndex = EditorGUILayout.Popup(
-                    currentIndex,
-                    labels.ToArray(),
-                    EditorStyles.toolbarPopup,
-                    GUILayout.Width(66f),
-                    GUILayout.Height(20f));
+            EditorGUI.BeginChangeCheck();
+            int nextIndex = EditorGUILayout.Popup(
+                currentIndex,
+                labels.ToArray(),
+                EditorStyles.toolbarPopup,
+                GUILayout.Width(62f),
+                GUILayout.Height(20f));
 
-                if (EditorGUI.EndChangeCheck() &&
-                    EditorApplication.isPlaying &&
-                    nextIndex >= 0 &&
-                    nextIndex < TimeScales.Length)
-                {
-                    Time.timeScale = TimeScales[nextIndex];
-                }
+            if (EditorGUI.EndChangeCheck() &&
+                nextIndex >= 0 &&
+                nextIndex < TimeScales.Length)
+            {
+                SetSavedTimeScale(TimeScales[nextIndex]);
+            }
+
+            if (GUILayout.Button(
+                    "Reset",
+                    EditorStyles.toolbarButton,
+                    GUILayout.Width(46f),
+                    GUILayout.Height(20f)))
+            {
+                SetSavedTimeScale(1f);
             }
 
             GUILayout.EndHorizontal();
@@ -407,7 +411,7 @@ namespace Dreamy.EditorTools.Scene
             }
 
             EditorBuildSettingsScene bootstrap = enabled
-                ? GetEnabledScenes().FirstOrDefault()
+                ? GetSelectedStartScene()
                 : null;
 
             EditorSceneManager.playModeStartScene = bootstrap == null
@@ -426,9 +430,9 @@ namespace Dreamy.EditorTools.Scene
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.ExitingPlayMode)
+            if (state == PlayModeStateChange.EnteredPlayMode)
             {
-                Time.timeScale = 1f;
+                Time.timeScale = GetSavedTimeScale();
             }
 
             if (state == PlayModeStateChange.EnteredEditMode)
@@ -493,8 +497,11 @@ namespace Dreamy.EditorTools.Scene
 
         private static int GetTimeScaleIndex()
         {
+            float selectedTimeScale = EditorApplication.isPlaying
+                ? Time.timeScale
+                : GetSavedTimeScale();
             int index = Array.FindIndex(TimeScales, value =>
-                Mathf.Approximately(value, Time.timeScale));
+                Mathf.Approximately(value, selectedTimeScale));
 
             if (index >= 0)
             {
@@ -561,6 +568,97 @@ namespace Dreamy.EditorTools.Scene
         private static string GetProjectScopedPlayFromBootstrapKey()
         {
             return PlayFromBootstrapKeyPrefix + StableHash(Application.dataPath);
+        }
+
+        private static string GetProjectScopedStartScenePathKey()
+        {
+            return StartScenePathKeyPrefix + StableHash(Application.dataPath);
+        }
+
+        private static string GetProjectScopedTimeScaleKey()
+        {
+            return TimeScaleKeyPrefix + StableHash(Application.dataPath);
+        }
+
+        private static float GetSavedTimeScale()
+        {
+            return EditorPrefs.GetFloat(GetProjectScopedTimeScaleKey(), 1f);
+        }
+
+        private static void SetSavedTimeScale(float value)
+        {
+            EditorPrefs.SetFloat(GetProjectScopedTimeScaleKey(), value);
+            if (EditorApplication.isPlaying)
+            {
+                Time.timeScale = value;
+            }
+
+            RepaintToolbar();
+        }
+
+        private static EditorBuildSettingsScene GetSelectedStartScene()
+        {
+            List<EditorBuildSettingsScene> scenes = GetEnabledScenes();
+            if (scenes.Count == 0)
+            {
+                return null;
+            }
+
+            string savedPath = EditorPrefs.GetString(
+                GetProjectScopedStartScenePathKey(),
+                string.Empty);
+            return scenes.FirstOrDefault(scene => scene.path == savedPath) ??
+                   scenes[0];
+        }
+
+        private sealed class StartScenePopup : PopupWindowContent
+        {
+            public override Vector2 GetWindowSize()
+            {
+                return new Vector2(300f, 72f);
+            }
+
+            public override void OnGUI(Rect rect)
+            {
+                List<EditorBuildSettingsScene> scenes = GetEnabledScenes();
+                bool enabled = EditorPrefs.GetBool(
+                    GetProjectScopedPlayFromBootstrapKey(),
+                    false);
+
+                EditorGUI.BeginChangeCheck();
+                bool nextEnabled = EditorGUILayout.ToggleLeft(
+                    "Enable start scene",
+                    enabled);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    SetPlayFromBootstrap(nextEnabled);
+                }
+
+                using (new EditorGUI.DisabledScope(scenes.Count == 0))
+                {
+                    List<string> labels = GetSceneLabels(scenes);
+                    EditorBuildSettingsScene selected = GetSelectedStartScene();
+                    int selectedIndex = selected == null
+                        ? 0
+                        : Mathf.Max(0, scenes.FindIndex(
+                            scene => scene.path == selected.path));
+
+                    EditorGUI.BeginChangeCheck();
+                    int nextIndex = EditorGUILayout.Popup(
+                        "Scene",
+                        selectedIndex,
+                        labels.ToArray());
+                    if (EditorGUI.EndChangeCheck() &&
+                        nextIndex >= 0 &&
+                        nextIndex < scenes.Count)
+                    {
+                        EditorPrefs.SetString(
+                            GetProjectScopedStartScenePathKey(),
+                            scenes[nextIndex].path);
+                        SetPlayFromBootstrap(nextEnabled);
+                    }
+                }
+            }
         }
 
         private static string StableHash(string text)
