@@ -23,13 +23,13 @@ Editor-only utilities for Dreamy internal Unity projects.
 - Select target and output directory.
 - Toggle development, debugging, profiler, deep profiling, and clean cache.
 - Validate enabled scenes, then Build or Build & Run.
-- Project-specific build options are saved to
-  `ProjectSettings/DreamyBuildSettings.asset`.
+- Project-specific build options are stored in EditorPrefs using a project key.
 
 ## General Tools
 
 - `Tools/Dreamy/PlayerPrefs/Clear All`
 - `Tools/Dreamy/Project/Open manifest.json`
+- `Tools/Dreamy/Data Debugger` for JSON config validation and save-file inspection
 - `Tools/Dreamy/Project/Clear Console`
 - `Assets/Create/Dreamy/Script/Save Data`
 - `Assets/Create/Dreamy/Script/Game Service`

@@ -30,12 +30,12 @@ namespace Dreamy.EditorTools.Build
         [MenuItem("Tools/Dreamy/Build/Build Current Target")]
         public static void BuildCurrentTarget()
         {
-            BuildPlayer(DreamyBuildSettings.instance, false);
+            BuildPlayer(DreamyBuildSettings.Load(), false);
         }
 
         private void OnEnable()
         {
-            settings = DreamyBuildSettings.instance;
+            settings = DreamyBuildSettings.Load();
         }
 
         private void OnGUI()
@@ -130,11 +130,11 @@ namespace Dreamy.EditorTools.Build
 
             if (EditorGUI.EndChangeCheck())
             {
-                settings.SaveSettings();
+                settings.Save();
             }
         }
 
-        private static void DrawValidation()
+        private void DrawValidation()
         {
             string[] scenes = GetEnabledScenes();
             if (scenes.Length == 0)
@@ -152,7 +152,7 @@ namespace Dreamy.EditorTools.Build
 
             BuildTargetGroup group =
                 BuildPipeline.GetBuildTargetGroup(
-                    DreamyBuildSettings.instance.Target);
+                    settings.Target);
             string identifier =
                 PlayerSettings.GetApplicationIdentifier(
                     NamedBuildTarget.FromBuildTargetGroup(group));

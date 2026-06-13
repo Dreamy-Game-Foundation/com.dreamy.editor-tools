@@ -1,13 +1,15 @@
+using System;
 using UnityEditor;
+using UnityEngine;
 
 namespace Dreamy.EditorTools.Build
 {
-    [FilePath(
-        "ProjectSettings/DreamyBuildSettings.asset",
-        FilePathAttribute.Location.ProjectFolder)]
+    [Serializable]
     public sealed class DreamyBuildSettings
-        : ScriptableSingleton<DreamyBuildSettings>
     {
+        private const string EditorPrefsKeyPrefix =
+            "Dreamy.EditorTools.BuildSettings.";
+
         public BuildTarget Target = BuildTarget.Android;
         public string OutputDirectory = "Builds";
         public bool DevelopmentBuild;
@@ -16,9 +18,37 @@ namespace Dreamy.EditorTools.Build
         public bool DeepProfiling;
         public bool CleanBuildCache;
 
-        public void SaveSettings()
+        public static DreamyBuildSettings Load()
         {
-            Save(true);
+            string key = GetEditorPrefsKey();
+            string json = EditorPrefs.GetString(key, string.Empty);
+            if (string.IsNullOrEmpty(json))
+            {
+                return new DreamyBuildSettings();
+            }
+
+            try
+            {
+                return JsonUtility.FromJson<DreamyBuildSettings>(json)
+                       ?? new DreamyBuildSettings();
+            }
+            catch (ArgumentException)
+            {
+                return new DreamyBuildSettings();
+            }
+        }
+
+        public void Save()
+        {
+            EditorPrefs.SetString(
+                GetEditorPrefsKey(),
+                JsonUtility.ToJson(this));
+        }
+
+        private static string GetEditorPrefsKey()
+        {
+            return EditorPrefsKeyPrefix +
+                   Application.dataPath.GetHashCode();
         }
     }
 }
