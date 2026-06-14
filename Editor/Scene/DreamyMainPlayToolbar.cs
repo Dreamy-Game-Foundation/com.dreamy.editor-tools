@@ -328,12 +328,12 @@ namespace Dreamy.EditorTools.Scene
             GUILayout.EndHorizontal();
         }
 
-        private static void OpenPreviousScene()
+        internal static void OpenPreviousScene()
         {
             OpenRelativeScene(-1);
         }
 
-        private static void OpenNextScene()
+        internal static void OpenNextScene()
         {
             OpenRelativeScene(1);
         }
@@ -355,7 +355,7 @@ namespace Dreamy.EditorTools.Scene
             OpenScene(scenes[nextIndex].path);
         }
 
-        private static void ReloadCurrentScene()
+        internal static void ReloadCurrentScene()
         {
             string path = SceneManager.GetActiveScene().path;
 

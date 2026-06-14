@@ -36,6 +36,18 @@ Editor-only utilities for Dreamy internal Unity projects.
 - `Assets/Create/Dreamy/Script/Save Data`
 - `Assets/Create/Dreamy/Script/Game Service`
 
+## Hotkeys
+
+- `F5`: compile project with a clean script cache
+- `Ctrl/Cmd+L`: toggle Inspector lock
+- `Ctrl/Cmd+W`: close the focused Editor window
+- `Ctrl/Cmd+Shift+Alt+S`: save scene and project
+- `Alt+PageUp`: previous enabled Build Settings scene
+- `Alt+PageDown`: next enabled Build Settings scene
+- `Alt+R`: reload current scene
+
+All shortcuts can be reassigned from `Edit > Shortcuts > Dreamy`.
+
 This package has no runtime assembly.
 
 Save data editor menu items live in `com.dreamy.datasave`.

@@ -2,6 +2,13 @@
 
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Configurable Dreamy shortcuts for compile, Inspector lock, close window,
+  save all, and scene navigation
+
 ## [0.2.1] - 2026-06-07
 
 ### Fixed
