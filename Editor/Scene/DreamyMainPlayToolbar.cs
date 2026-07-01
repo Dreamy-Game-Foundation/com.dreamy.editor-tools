@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEditor.Toolbars;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
@@ -12,20 +12,13 @@ using UnityEngine.UIElements;
 namespace Dreamy.EditorTools.Scene
 {
     /// <summary>
-    /// Adds Dreamy scene controls around Unity's main Play/Pause controls.
-    ///
-    /// Scene controls are inserted before Unity Play/Pause/Step.
-    /// Time scale controls are inserted after Unity Play/Pause/Step.
-    ///
-    /// This uses IMGUIContainer with Unity toolbar styles to avoid broken UI Toolkit
-    /// text/background rendering inside the internal main toolbar.
+    /// Registers Dreamy scene controls as supported Unity Editor toolbar elements.
     /// </summary>
     [InitializeOnLoad]
     public static class DreamyMainPlayToolbar
     {
-        private const string LegacyRootElementName = "DreamyMainPlayToolbarRoot";
-        private const string SceneRootElementName = "DreamyMainPlayToolbarSceneRoot";
-        private const string TimeRootElementName = "DreamyMainPlayToolbarTimeRoot";
+        private const string SceneToolbarElementId = "Dreamy/Scene Controls";
+        private const string TimeToolbarElementId = "Dreamy/Time Scale";
 
         private const string PlayFromBootstrapKeyPrefix =
             "Dreamy.EditorTools.PlayFromBootstrap.";
@@ -38,14 +31,6 @@ namespace Dreamy.EditorTools.Scene
         private const float TimeToolbarWidth = 150f;
         private const float ToolbarHeight = 22f;
 
-        private static readonly Type ToolbarType =
-            typeof(Editor).Assembly.GetType("UnityEditor.Toolbar");
-
-        private static readonly BindingFlags InstanceFlags =
-            BindingFlags.Instance |
-            BindingFlags.Public |
-            BindingFlags.NonPublic;
-
         private static readonly float[] TimeScales =
         {
             0f,
@@ -56,11 +41,8 @@ namespace Dreamy.EditorTools.Scene
             4f
         };
 
-        private static VisualElement sceneRoot;
-        private static VisualElement timeRoot;
-
-        private static IMGUIContainer sceneGui;
-        private static IMGUIContainer timeGui;
+        private static readonly List<IMGUIContainer> SceneGuis = new List<IMGUIContainer>();
+        private static readonly List<IMGUIContainer> TimeGuis = new List<IMGUIContainer>();
 
         static DreamyMainPlayToolbar()
         {
@@ -75,119 +57,18 @@ namespace Dreamy.EditorTools.Scene
 
         private static void OnEditorUpdate()
         {
-            TryAttachToMainToolbar();
-
             if (EditorApplication.isPlaying)
             {
                 RepaintToolbar();
             }
         }
 
-        private static void TryAttachToMainToolbar()
-        {
-            if (ToolbarType == null)
-            {
-                return;
-            }
-
-            if (sceneRoot != null &&
-                sceneRoot.panel != null &&
-                timeRoot != null &&
-                timeRoot.panel != null)
-            {
-                return;
-            }
-
-            UnityEngine.Object[] toolbars =
-                Resources.FindObjectsOfTypeAll(ToolbarType);
-
-            if (toolbars == null ||
-                toolbars.Length == 0 ||
-                toolbars[0] is not ScriptableObject toolbar)
-            {
-                return;
-            }
-
-            VisualElement toolbarRoot = GetToolbarRoot(toolbar);
-
-            if (toolbarRoot == null)
-            {
-                return;
-            }
-
-            RemoveExistingDreamyToolbar(toolbarRoot);
-
-            VisualElement playZone = toolbarRoot.Q<VisualElement>("ToolbarZonePlayMode");
-
-            if (playZone != null)
-            {
-                sceneRoot = CreateSceneToolbarContent();
-                timeRoot = CreateTimeToolbarContent();
-
-                playZone.Insert(0, sceneRoot);
-                playZone.Add(timeRoot);
-
-                ApplyPlayModeStartScene();
-                RepaintToolbar();
-                return;
-            }
-
-            VisualElement leftZone = toolbarRoot.Q<VisualElement>("ToolbarZoneLeftAlign");
-            VisualElement rightZone = toolbarRoot.Q<VisualElement>("ToolbarZoneRightAlign");
-
-            if (leftZone == null && rightZone == null)
-            {
-                return;
-            }
-
-            sceneRoot = CreateSceneToolbarContent();
-            timeRoot = CreateTimeToolbarContent();
-
-            leftZone?.Add(sceneRoot);
-            rightZone?.Insert(0, timeRoot);
-
-            ApplyPlayModeStartScene();
-            RepaintToolbar();
-        }
-
-        private static VisualElement GetToolbarRoot(ScriptableObject toolbar)
-        {
-            FieldInfo rootField = ToolbarType.GetField("m_Root", InstanceFlags);
-
-            if (rootField?.GetValue(toolbar) is VisualElement fieldRoot)
-            {
-                return fieldRoot;
-            }
-
-            PropertyInfo rootProperty = toolbar.GetType()
-                .GetProperty("rootVisualElement", InstanceFlags);
-
-            return rootProperty?.GetValue(toolbar) as VisualElement;
-        }
-
-        private static void RemoveExistingDreamyToolbar(VisualElement toolbarRoot)
-        {
-            RemoveElementByName(toolbarRoot, LegacyRootElementName);
-            RemoveElementByName(toolbarRoot, SceneRootElementName);
-            RemoveElementByName(toolbarRoot, TimeRootElementName);
-        }
-
-        private static void RemoveElementByName(VisualElement root, string elementName)
-        {
-            VisualElement element = root.Q<VisualElement>(elementName);
-
-            if (element != null)
-            {
-                element.RemoveFromHierarchy();
-            }
-        }
-
         private static VisualElement CreateSceneToolbarContent()
         {
-            VisualElement root = CreateRoot(SceneRootElementName, SceneToolbarWidth);
+            VisualElement root = CreateRoot(SceneToolbarElementId, SceneToolbarWidth);
             root.style.marginRight = 4f;
 
-            sceneGui = new IMGUIContainer(DrawSceneToolbarGui)
+            IMGUIContainer sceneGui = new IMGUIContainer(DrawSceneToolbarGui)
             {
                 name = "DreamySceneToolbarIMGUI"
             };
@@ -195,15 +76,18 @@ namespace Dreamy.EditorTools.Scene
             sceneGui.style.height = ToolbarHeight;
 
             root.Add(sceneGui);
+            SceneGuis.Add(sceneGui);
+            sceneGui.RegisterCallback<DetachFromPanelEvent>(_ => SceneGuis.Remove(sceneGui));
+
             return root;
         }
 
         private static VisualElement CreateTimeToolbarContent()
         {
-            VisualElement root = CreateRoot(TimeRootElementName, TimeToolbarWidth);
+            VisualElement root = CreateRoot(TimeToolbarElementId, TimeToolbarWidth);
             root.style.marginLeft = 4f;
 
-            timeGui = new IMGUIContainer(DrawTimeToolbarGui)
+            IMGUIContainer timeGui = new IMGUIContainer(DrawTimeToolbarGui)
             {
                 name = "DreamyTimeToolbarIMGUI"
             };
@@ -211,6 +95,9 @@ namespace Dreamy.EditorTools.Scene
             timeGui.style.height = ToolbarHeight;
 
             root.Add(timeGui);
+            TimeGuis.Add(timeGui);
+            timeGui.RegisterCallback<DetachFromPanelEvent>(_ => TimeGuis.Remove(timeGui));
+
             return root;
         }
 
@@ -465,8 +352,31 @@ namespace Dreamy.EditorTools.Scene
 
         private static void RepaintToolbar()
         {
-            sceneGui?.MarkDirtyRepaint();
-            timeGui?.MarkDirtyRepaint();
+            for (int i = SceneGuis.Count - 1; i >= 0; i--)
+            {
+                IMGUIContainer gui = SceneGuis[i];
+
+                if (gui == null || gui.panel == null)
+                {
+                    SceneGuis.RemoveAt(i);
+                    continue;
+                }
+
+                gui.MarkDirtyRepaint();
+            }
+
+            for (int i = TimeGuis.Count - 1; i >= 0; i--)
+            {
+                IMGUIContainer gui = TimeGuis[i];
+
+                if (gui == null || gui.panel == null)
+                {
+                    TimeGuis.RemoveAt(i);
+                    continue;
+                }
+
+                gui.MarkDirtyRepaint();
+            }
         }
 
         private static int GetCurrentSceneIndex()
@@ -677,6 +587,26 @@ namespace Dreamy.EditorTools.Scene
                 }
 
                 return hash.ToString("X16");
+            }
+        }
+
+        [EditorToolbarElement(SceneToolbarElementId)]
+        private sealed class SceneToolbarElement : VisualElement
+        {
+            public SceneToolbarElement()
+            {
+                Add(CreateSceneToolbarContent());
+                ApplyPlayModeStartScene();
+            }
+        }
+
+        [EditorToolbarElement(TimeToolbarElementId)]
+        private sealed class TimeToolbarElement : VisualElement
+        {
+            public TimeToolbarElement()
+            {
+                Add(CreateTimeToolbarContent());
+                ApplyPlayModeStartScene();
             }
         }
     }
