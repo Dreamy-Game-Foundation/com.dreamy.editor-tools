@@ -1,53 +1,38 @@
-# com.dreamy.editor-tools
+# Dreamy Editor Tools
 
-Editor-only utilities for Dreamy internal Unity projects.
+Package thuộc Dreamy Game Studio. Hướng dẫn dưới đây mô tả cấu trúc, cách cài vào project và tích hợp ở root/scene.
 
-## Scene Tools
+## Cài package
 
-- Open `Tools/Dreamy/Scene/Scene Manager`.
-- Find all project scenes or add the open/selected scene.
-- Enable, disable, reorder, remove, and open Build Settings scenes.
-- Put the bootstrap scene first and remove missing scene entries.
-- Use the Dreamy controls beside Unity's Play controls for previous, next,
-  reload, scene selection, Play From Bootstrap, and Time Scale.
+Dùng Unity 6000.0 trở lên. Sandbox đã tham chiếu package bằng `file:../LocalPackages/com.dreamy.editor-tools`. Project khác dùng Package Manager > + > Install package from disk và chọn package.json, hoặc Git URL của repository nội bộ. Cài cả dependency Dreamy/Git vào manifest của game; version dependency không tự cấu hình registry riêng.
 
-## Package Tools
+Dependency trực tiếp theo package.json:
 
-- Open `Tools/Dreamy/Package/Package Manager`.
-- View and search direct dependencies from `manifest.json`.
-- Add package IDs or Git URLs through Unity Package Manager.
-- Remove packages, request dependency resolution, and open manifest/lock files.
+- `com.unity.nuget.newtonsoft-json` (3.2.1)
 
-## Build Tools
+## Cấu trúc và asmdef
 
-- Open `Tools/Dreamy/Build/Build Manager`.
-- Configure product version, Android version code, and iOS build number.
-- Select target and output directory.
-- Toggle development, debugging, profiler, deep profiling, and clean cache.
-- Validate enabled scenes, then Build or Build & Run.
-- Project-specific build options are stored in EditorPrefs using a project key.
+| Assembly | Reference | Phạm vi |
+| --- | --- | --- |
+| `Dreamy.EditorTools.Editor` | Unity.Newtonsoft.Json | Chỉ Editor |
 
-## General Tools
+Trong asmdef của game, thêm assembly chứa API trực tiếp sử dụng. Code bootstrap reference thêm Core/DataConfig/Datasave/Economy theo nhu cầu; code async reference UniTask. Code gọi type sample reference assembly sample. Giữ Editor reference trong asmdef Editor-only.
 
-- `Tools/Dreamy/PlayerPrefs/Clear All`
-- `Tools/Dreamy/Project/Open manifest.json`
-- `Tools/Dreamy/Data Debugger` for JSON config validation and save-file inspection
-- `Tools/Dreamy/Project/Clear Console`
-- `Assets/Create/Dreamy/Script/Save Data`
-- `Assets/Create/Dreamy/Script/Game Service`
+## Cấu trúc và sử dụng
 
-## Hotkeys
+Package chỉ có Editor; không cài service trong GameInstaller, không thêm component vào scene và không reference từ Runtime. Nếu mở rộng bằng code Editor, dùng Dreamy.EditorTools.Editor từ asmdef giới hạn Editor.
 
-- `F5`: compile project with a clean script cache
-- `Ctrl/Cmd+L`: toggle Inspector lock
-- `Ctrl/Cmd+W`: close the focused Editor window
-- `Ctrl/Cmd+Shift+Alt+S`: save scene and project
-- `Alt+PageUp`: previous enabled Build Settings scene
-- `Alt+PageDown`: next enabled Build Settings scene
-- `Alt+R`: reload current scene
+- Tools/Dreamy/Scene/Scene Manager: quản lý scene trong Build Settings, thứ tự bootstrap và scene thiếu. Toolbar hỗ trợ chọn/reload scene, Play From Bootstrap và Time Scale.
+- Tools/Dreamy/Package/Package Manager: xem dependency manifest, thêm package/Git URL, resolve và mở manifest/lock.
+- Tools/Dreamy/Build/Build Manager: version, Android version code, iOS build number, target/output và tùy chọn development/profiler; validate scene rồi Build hoặc Build & Run.
+- Tools/Dreamy/Data Debugger: kiểm tra JSON config và save.
+- Tools/Dreamy/Project: mở manifest hoặc clear console; PlayerPrefs/Clear All phục vụ reset local.
 
-All shortcuts can be reassigned from `Edit > Shortcuts > Dreamy`.
+Thiết lập riêng của Editor được lưu theo project. Menu xử lý save nằm ở Datasave. Xem Edit > Shortcuts > Dreamy để đổi phím; F5 compile, Ctrl/Cmd+L khóa Inspector, Alt+PageUp/PageDown chuyển scene, Alt+R reload scene.
+## Sample
 
-This package has no runtime assembly.
+Manifest hiện không khai báo sample để import qua Package Manager.
 
-Save data editor menu items live in `com.dreamy.datasave`.
+## Addressables
+
+Package này không có panel cần đăng ký vào Addressables Group. Việc đặt address của prefab/asset thuộc game hoặc package UI/Assets; không dùng Addressables thay bước đăng ký service/config/save.
