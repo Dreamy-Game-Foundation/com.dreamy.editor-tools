@@ -17,6 +17,11 @@ namespace Dreamy.EditorTools.Scene
     public static class DreamyMainPlayToolbar
     {
         private const string SceneToolbarElementId = "Dreamy/Scene Controls";
+        private const string ViewToolbarElementId = "Dreamy/Audio and Scene View";
+        private static bool lastMuted;
+        private static bool last2D;
+        private static SceneView lastView;
+        private static double nextViewRefresh;
         private const string TimeToolbarElementId = "Dreamy/Time Scale";
         private const string SceneToolbarTooltip = "Open, reload, and choose Dreamy project scenes.";
         private const string TimeToolbarTooltip = "Set the game time scale.";
@@ -33,6 +38,7 @@ namespace Dreamy.EditorTools.Scene
 
         static DreamyMainPlayToolbar()
         {
+            EditorApplication.update += UpdateViewToolbar;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorApplication.delayCall += ApplyPlayModeStartScene;
 
@@ -84,6 +90,46 @@ namespace Dreamy.EditorTools.Scene
             yield return new MainToolbarButton(
                 new MainToolbarContent("Reset", "Reset time scale to 1"),
                 () => SetTimeScale(1f));
+        }
+
+        [MainToolbarElement(ViewToolbarElementId, defaultDockPosition = MainToolbarDockPosition.Left)]
+        public static IEnumerable<MainToolbarElement> InstantiateViewToolbar()
+        {
+            yield return new MainToolbarToggle(
+                new MainToolbarContent("Mute", "Mute audio in the Unity Editor"),
+                EditorUtility.audioMasterMute,
+                muted =>
+                {
+                    EditorUtility.audioMasterMute = muted;
+                    MainToolbar.Refresh(ViewToolbarElementId);
+                });
+
+            SceneView view = SceneView.lastActiveSceneView;
+            yield return new MainToolbarToggle(
+                new MainToolbarContent("2D", "Toggle 2D/3D in the last active Scene View"),
+                view != null && view.in2DMode,
+                enabled =>
+                {
+                    SceneView target = SceneView.lastActiveSceneView;
+                    if (target == null) target = EditorWindow.GetWindow<SceneView>();
+                    target.in2DMode = enabled;
+                    target.Repaint();
+                    MainToolbar.Refresh(ViewToolbarElementId);
+                });
+        }
+
+        private static void UpdateViewToolbar()
+        {
+            if (EditorApplication.timeSinceStartup < nextViewRefresh) return;
+            nextViewRefresh = EditorApplication.timeSinceStartup + 0.25;
+            SceneView view = SceneView.lastActiveSceneView;
+            bool muted = EditorUtility.audioMasterMute;
+            bool mode2D = view != null && view.in2DMode;
+            if (view == lastView && muted == lastMuted && mode2D == last2D) return;
+            lastView = view;
+            lastMuted = muted;
+            last2D = mode2D;
+            MainToolbar.Refresh(ViewToolbarElementId);
         }
 
         internal static void OpenPreviousScene()

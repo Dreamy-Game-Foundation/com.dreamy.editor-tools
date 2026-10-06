@@ -19,7 +19,7 @@ namespace Dreamy.EditorTools
         private const string DataConfigMarker = "/Resources/DataConfig/";
         private const string DefaultDataConfigFolder = "Assets/_Project/Resources/DataConfig";
 
-        private const float ToolbarHeight = 30f;
+        private const float ToolbarHeight = 48f;
         private const float StatusHeight = 22f;
         private const float SidebarWidthMin = 190f;
         private const float SidebarWidthMax = 420f;
@@ -61,6 +61,22 @@ namespace Dreamy.EditorTools
         private string fileSearch = "";
         private Vector2 sidebarScroll;
 
+        private sealed class InspectionFrame
+        {
+            public JToken Token;
+            public JValue EncodedSource;
+        }
+
+        private const int InlinePageSize = 12;
+        private readonly HashSet<JToken> expandedValues = new HashSet<JToken>();
+        private readonly Dictionary<JArray, string> inlinePaths = new Dictionary<JArray, string>();
+        private readonly Dictionary<JArray, int> inlinePages = new Dictionary<JArray, int>();
+        private readonly Dictionary<string, float[]> tableRowOffsets = new Dictionary<string, float[]>();
+        private readonly List<InspectionFrame> inspection = new List<InspectionFrame>();
+        private readonly Dictionary<string, JArray> drawnArrays = new Dictionary<string, JArray>();
+        private readonly Dictionary<JArray, List<string>> cachedColumns = new Dictionary<JArray, List<string>>();
+        private readonly Dictionary<JArray, List<int>> cachedRows = new Dictionary<JArray, List<int>>();
+        private readonly Dictionary<JArray, string> cachedFilters = new Dictionary<JArray, string>();
         private JToken rootToken;
         private string editText = "";
         private string originalRawFile = "";
@@ -145,7 +161,7 @@ namespace Dreamy.EditorTools
 
             if (command && e.keyCode == KeyCode.S)
             {
-                SaveCurrent();
+                RequestSave();
                 e.Use();
                 return;
             }
@@ -161,6 +177,10 @@ namespace Dreamy.EditorTools
                 e.Use();
                 return;
             }
+
+            // Text controls own copy/paste, delete and cursor movement while editing.
+            if (EditorGUIUtility.editingTextField || viewMode == ViewMode.Text)
+                return;
 
             JArray selectedArray = GetSelectedArray();
             if (selectedArray == null || selectedRowIndex < 0 || selectedRowIndex >= selectedArray.Count)
@@ -237,24 +257,8 @@ namespace Dreamy.EditorTools
             if (root == null || string.IsNullOrEmpty(path))
                 return null;
 
-            if (path == "root")
-                return root as JArray;
-
-            string[] parts = path.Split('.');
-            JToken current = root;
-
-            for (int i = 1; i < parts.Length; i++)
-            {
-                if (current is JObject obj && obj.TryGetValue(parts[i], out JToken next))
-                {
-                    current = next;
-                    continue;
-                }
-
-                return null;
-            }
-
-            return current as JArray;
+            if (drawnArrays.TryGetValue(path, out JArray array)) return array;
+            return path == "root" ? root as JArray : null;
         }
 
 
@@ -364,7 +368,7 @@ namespace Dreamy.EditorTools
             using (new EditorGUI.DisabledScope(!HasSelectedFile()))
             {
                 if (GUILayout.Button("Save", EditorStyles.toolbarButton, GUILayout.Width(56f)))
-                    SaveCurrent();
+                    RequestSave();
 
                 if (GUILayout.Button("Reload", EditorStyles.toolbarButton, GUILayout.Width(64f)))
                     ReloadCurrent();
@@ -378,10 +382,15 @@ namespace Dreamy.EditorTools
                 if (GUILayout.Button("Validate", EditorStyles.toolbarButton, GUILayout.Width(72f)))
                     ValidateCurrent();
 
+                if (sourceMode == SourceMode.Datasave && GUILayout.Button(new GUIContent("Reset Save", "Delete this test save and its backups without creating a backup. Stop Play Mode first."), EditorStyles.toolbarButton, GUILayout.Width(82f)))
+                    DeleteSave(CurrentFile);
+
                 if (GUILayout.Button("Reveal", EditorStyles.toolbarButton, GUILayout.Width(62f)))
                     RevealCurrent();
             }
 
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal(EditorStyles.toolbar);
             if (sourceMode == SourceMode.DataConfig)
             {
                 if (GUILayout.Button("New Config", EditorStyles.toolbarButton, GUILayout.Width(90f)))
@@ -395,12 +404,12 @@ namespace Dreamy.EditorTools
                 if (GUILayout.Button("Open Saves", EditorStyles.toolbarButton, GUILayout.Width(86f)))
                     OpenSaveFolder();
 
-                if (GUILayout.Button("Delete Saves", EditorStyles.toolbarButton, GUILayout.Width(94f)))
+                if (GUILayout.Button("Reset Saves", EditorStyles.toolbarButton, GUILayout.Width(94f)))
                     DeleteAllSaves();
             }
 
             GUILayout.FlexibleSpace();
-            autoBackup = GUILayout.Toggle(autoBackup, "Auto Backup", EditorStyles.toolbarButton, GUILayout.Width(104f));
+            autoBackup = GUILayout.Toggle(autoBackup, new GUIContent("Backup on Save", "Create an Editor backup before saving edits. Reset Save never creates backups. Runtime backup is independent."), EditorStyles.toolbarButton, GUILayout.Width(116f));
 
             if (isDirty)
                 GUILayout.Label("Unsaved", EditorStyles.toolbarButton, GUILayout.Width(70f));
@@ -533,13 +542,14 @@ namespace Dreamy.EditorTools
                 return;
             }
 
-            if (rootToken is JObject obj)
+            JToken displayed = rootToken;
+            if (displayed is JObject obj)
             {
-                DrawObject(obj, "root");
+                DrawObjectSection(obj, "root" + displayed.Path, "root");
             }
-            else if (rootToken is JArray arr)
+            else if (displayed is JArray arr)
             {
-                DrawArraySection(arr, "root", "root", true);
+                DrawArraySection(arr, "root" + displayed.Path, "root", true);
             }
             else
             {
@@ -549,6 +559,198 @@ namespace Dreamy.EditorTools
             GUILayout.Space(24);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        private JToken ExpandedContent(JToken token)
+        {
+            if (token == null || !expandedValues.Contains(token)) return null;
+            if (token is JContainer) return token;
+            return inspection.FirstOrDefault(frame => ReferenceEquals(frame.EncodedSource, token))?.Token;
+        }
+
+        private void ToggleInline(JToken token)
+        {
+            if (!expandedValues.Remove(token))
+            {
+                if (token.Type == JTokenType.String && !inspection.Any(frame => ReferenceEquals(frame.EncodedSource, token)))
+                {
+                    try
+                    {
+                        JToken decoded = JToken.Parse(token.Value<string>());
+                        if (!(decoded is JContainer)) return;
+                        inspection.Add(new InspectionFrame { Token = decoded, EncodedSource = (JValue)token });
+                    }
+                    catch (JsonException ex) { SetStatus("Invalid embedded JSON: " + ex.Message, MessageType.Error); return; }
+                }
+                expandedValues.Add(token);
+            }
+            selectedTablePath = "";
+            selectedRowIndex = -1;
+            GUI.FocusControl(null);
+            Repaint();
+            GUIUtility.ExitGUI(); // Recalculate variable row heights on the next layout pass.
+        }
+
+        private int InlinePageStart(JArray array)
+        {
+            int page = inlinePages.TryGetValue(array, out int saved) ? saved : 0;
+            page = Math.Max(0, Math.Min(page, Math.Max(0, (array.Count - 1) / InlinePageSize)));
+            inlinePages[array] = page;
+            return page * InlinePageSize;
+        }
+
+        private float ExpandedHeight(JToken source, int depth = 0)
+        {
+            JToken content = ExpandedContent(source);
+            return content == null ? 0 : InlineHeight(content, depth) + 8;
+        }
+
+        private float InlineHeight(JToken content, int depth)
+        {
+            if (depth >= 10) return RowHeight;
+            float height = RowHeight; // Title and list actions.
+            if (content is JObject obj)
+            {
+                foreach (JProperty property in obj.Properties())
+                    height += RowHeight + ExpandedHeight(property.Value, depth + 1);
+            }
+            else if (content is JArray array)
+            {
+                bool objects = IsObjectTable(array);
+                List<string> columns = objects ? GetColumns(array) : new List<string> { "value" };
+                if (array.Count == 0) return height + RowHeight;
+                height += RowHeight; // Column headers.
+                int start = InlinePageStart(array);
+                for (int i = start; i < Math.Min(array.Count, start + InlinePageSize); i++)
+                {
+                    height += RowHeight;
+                    if (objects && array[i] is JObject row)
+                        foreach (string column in columns) height += (columns.Count > 4 ? RowHeight : 0) + ExpandedHeight(row[column], depth + 1);
+                    else height += ExpandedHeight(array[i], depth + 1);
+                }
+            }
+            return height;
+        }
+
+        private float TableRowHeight(JToken row, bool objectTable)
+        {
+            float height = RowHeight + 1;
+            if (objectTable && row is JObject obj)
+                foreach (JProperty property in obj.Properties()) height += ExpandedHeight(property.Value);
+            else height += ExpandedHeight(row);
+            return height;
+        }
+
+        private float DrawExpanded(Rect area, JToken source, string label, int depth = 0)
+        {
+            JToken content = ExpandedContent(source);
+            if (content == null) return 0;
+            float height = InlineHeight(content, depth);
+            Rect panel = new Rect(area.x + 12, area.y + 4, Math.Max(120, area.width - 20), height);
+            EditorGUI.DrawRect(panel, new Color(0.12f, 0.15f, 0.20f));
+            EditorGUI.DrawRect(new Rect(panel.x, panel.y, 3, panel.height), new Color(0.30f, 0.60f, 0.85f));
+            if (depth >= 10)
+            {
+                GUI.Label(new Rect(panel.x + 8, panel.y + 4, panel.width - 16, 20), "Maximum inline depth. Use Edit JSON for deeper data.", EditorStyles.miniLabel);
+                return height + 8;
+            }
+            Rect title = new Rect(panel.x + 8, panel.y + 3, panel.width - 16, RowHeight - 6);
+            GUI.Label(new Rect(title.x, title.y, Math.Max(0, title.width - (content is JArray ? 210 : 32)), title.height), new GUIContent(label + (content is JArray list ? " · " + list.Count + " items" : " · object"), label), EditorStyles.boldLabel);
+            if (GUI.Button(new Rect(title.xMax - 24, title.y, 24, title.height), new GUIContent("▾", "Collapse this section"), smallButtonStyle)) ToggleInline(source);
+            float y = panel.y + RowHeight;
+            if (content is JObject obj)
+            {
+                foreach (JProperty property in obj.Properties().ToList())
+                {
+                    float keyWidth = Math.Min(180, panel.width * 0.3f);
+                    GUI.Label(new Rect(panel.x + 10, y + 4, keyWidth - 12, 20), property.Name, EditorStyles.miniLabel);
+                    DrawValueField(property.Value, new Rect(panel.x + keyWidth, y + 2, panel.width - keyWidth - 8, RowHeight - 4), value => { property.Value = value; OnTokenChanged(); });
+                    y += RowHeight;
+                    y += DrawExpanded(new Rect(panel.x + 8, y, panel.width - 16, 0), property.Value, property.Name, depth + 1);
+                }
+            }
+            else if (content is JArray array)
+            {
+                if (!inlinePaths.TryGetValue(array, out string inlinePath))
+                {
+                    inlinePath = "inline:" + inlinePaths.Count;
+                    inlinePaths[array] = inlinePath;
+                }
+                drawnArrays[inlinePath] = array;
+                int start = InlinePageStart(array);
+                int page = start / InlinePageSize;
+                int pages = Math.Max(1, (array.Count + InlinePageSize - 1) / InlinePageSize);
+                GUI.Label(new Rect(title.xMax - 202, title.y + 3, 50, 18), (page + 1) + " / " + pages, EditorStyles.miniLabel);
+                using (new EditorGUI.DisabledScope(page == 0))
+                    if (GUI.Button(new Rect(title.xMax - 148, title.y, 26, title.height), "<", smallButtonStyle)) { inlinePages[array] = page - 1; GUIUtility.ExitGUI(); }
+                using (new EditorGUI.DisabledScope(page + 1 >= pages))
+                    if (GUI.Button(new Rect(title.xMax - 118, title.y, 26, title.height), ">", smallButtonStyle)) { inlinePages[array] = page + 1; GUIUtility.ExitGUI(); }
+                if (GUI.Button(new Rect(title.xMax - 88, title.y, 60, title.height), "+ Row", smallButtonStyle))
+                {
+                    AddRow(array, inlinePath);
+                    inlinePages[array] = (array.Count - 1) / InlinePageSize;
+                    GUIUtility.ExitGUI();
+                }
+                if (array.Count == 0)
+                {
+                    GUI.Label(new Rect(panel.x + 10, y + 4, panel.width - 20, 20), "Empty list — use + Row to add an item.", EditorStyles.miniLabel);
+                    return height + 8;
+                }
+                bool objects = IsObjectTable(array);
+                List<string> columns = objects ? GetColumns(array) : new List<string> { "value" };
+                // Wide items use field/value rows instead of squeezing many columns into the panel.
+                bool verticalFields = columns.Count > 4;
+                float cellWidth = Math.Max(24, (panel.width - 82) / Math.Max(1, columns.Count));
+                GUI.Label(new Rect(panel.x + 8, y + 4, 32, 20), "#", EditorStyles.miniLabel);
+                if (verticalFields)
+                    GUI.Label(new Rect(panel.x + 42, y + 4, panel.width - 50, 20), "Item fields", headerStyle);
+                else
+                    for (int c = 0; c < columns.Count; c++)
+                        GUI.Label(new Rect(panel.x + 42 + c * cellWidth, y + 4, cellWidth - 4, 20), new GUIContent(columns[c], columns[c]), headerStyle);
+                y += RowHeight;
+                for (int i = start; i < Math.Min(array.Count, start + InlinePageSize); i++)
+                {
+                    int index = i;
+                    JToken row = array[index];
+                    EditorGUI.DrawRect(new Rect(panel.x + 6, y, panel.width - 12, RowHeight), selectedTablePath == inlinePath && selectedRowIndex == index ? new Color(0.23f, 0.43f, 0.76f) :
+                        (index % 2 == 0 ? new Color(0.16f, 0.19f, 0.24f) : new Color(0.19f, 0.22f, 0.27f)));
+                    GUI.Label(new Rect(panel.x + 8, y + 4, 32, 20), (index + 1).ToString(), EditorStyles.miniLabel);
+                    if (!verticalFields || !(row is JObject))
+                    for (int c = 0; c < columns.Count; c++)
+                    {
+                        string key = columns[c];
+                        JToken value = objects && row is JObject ? GetCell(row, key) : row;
+                        DrawValueField(value, new Rect(panel.x + 42 + c * cellWidth, y + 2, row is JObject ? cellWidth - 4 : panel.width - 82, RowHeight - 4), edited =>
+                        {
+                            if (objects && array[index] is JObject target) target[key] = edited;
+                            else array[index] = edited;
+                            OnTokenChanged();
+                        });
+                        if (!(row is JObject)) break;
+                    }
+                    if (GUI.Button(new Rect(panel.xMax - 32, y + 2, 24, RowHeight - 4), new GUIContent("×", "Delete this list item"), smallButtonStyle))
+                    {
+                        DeleteRow(array, index);
+                        GUIUtility.ExitGUI();
+                    }
+                    HandleRowContext(array, inlinePath, new Rect(panel.x + 6, y, panel.width - 12, RowHeight), index);
+                    y += RowHeight;
+                    if (objects && row is JObject rowObject)
+                        foreach (string key in columns)
+                        {
+                            if (verticalFields)
+                            {
+                                float keyWidth = Math.Min(180, panel.width * 0.3f);
+                                GUI.Label(new Rect(panel.x + 16, y + 4, keyWidth - 16, 20), new GUIContent(key, key), EditorStyles.miniLabel);
+                                DrawValueField(rowObject[key], new Rect(panel.x + keyWidth, y + 2, panel.width - keyWidth - 8, RowHeight - 4), edited => { rowObject[key] = edited; OnTokenChanged(); });
+                                y += RowHeight;
+                            }
+                            y += DrawExpanded(new Rect(panel.x + 8, y, panel.width - 16, 0), rowObject[key], key, depth + 1);
+                        }
+                    else y += DrawExpanded(new Rect(panel.x + 8, y, panel.width - 16, 0), row, "Item " + (index + 1), depth + 1);
+                }
+            }
+            return height + 8;
         }
 
         private void DrawRootScalar()
@@ -561,13 +763,16 @@ namespace Dreamy.EditorTools
                 rootToken = token;
                 OnTokenChanged();
             });
+            float expandedHeight = ExpandedHeight(rootToken);
+            if (expandedHeight > 0)
+                DrawExpanded(GUILayoutUtility.GetRect(0, expandedHeight, GUILayout.ExpandWidth(true)), rootToken, "value");
         }
 
         private void DrawObject(JObject obj, string path)
         {
             foreach (JProperty prop in obj.Properties().ToList())
             {
-                string childPath = path + "." + prop.Name;
+                string childPath = path + "[" + JsonConvert.ToString(prop.Name) + "]";
 
                 if (prop.Value is JArray arr)
                     DrawArraySection(arr, childPath, prop.Name, false);
@@ -615,6 +820,12 @@ namespace Dreamy.EditorTools
                 prop.Value = token ?? JValue.CreateNull();
                 OnTokenChanged();
             });
+            float expandedHeight = ExpandedHeight(prop.Value);
+            if (expandedHeight > 0)
+            {
+                Rect details = GUILayoutUtility.GetRect(0, expandedHeight, GUILayout.ExpandWidth(true));
+                DrawExpanded(details, prop.Value, prop.Name);
+            }
         }
 
         private void DrawArraySection(JArray arr, string path, string label, bool rootArray)
@@ -664,6 +875,7 @@ namespace Dreamy.EditorTools
 
         private void DrawTable(JArray arr, string path)
         {
+            drawnArrays[path] = arr;
             bool objectTable = IsObjectTable(arr);
             List<string> columns = objectTable ? GetColumns(arr) : new List<string> { "value" };
             List<int> visibleRows = GetVisibleRows(arr, path);
@@ -697,9 +909,12 @@ namespace Dreamy.EditorTools
             DrawTableHeader(-sv.x, header.width, arr, path, columns, widths);
             GUI.EndGroup();
 
-            float bodyHeight = Mathf.Min(visibleRows.Count * (RowHeight + 1) + 4, 720f);
+            float[] offsets = new float[visibleRows.Count + 1];
+            for (int i = 0; i < visibleRows.Count; i++) offsets[i + 1] = offsets[i] + TableRowHeight(arr[visibleRows[i]], objectTable);
+            tableRowOffsets[path] = offsets;
+            float bodyHeight = Mathf.Min(offsets[visibleRows.Count] + 4, 720f);
             Rect body = GUILayoutUtility.GetRect(0, Mathf.Max(44, bodyHeight), GUILayout.ExpandWidth(true));
-            Rect inner = new Rect(0, 0, Mathf.Max(tableWidth, body.width), visibleRows.Count * (RowHeight + 1) + 4);
+            Rect inner = new Rect(0, 0, Mathf.Max(tableWidth, body.width), offsets[visibleRows.Count] + 4);
 
             sv = GUI.BeginScrollView(body, sv, inner, tableWidth > body.width, inner.height > body.height);
 
@@ -707,10 +922,15 @@ namespace Dreamy.EditorTools
             int duplicateRow = -1;
             int convertRow = -1;
 
-            for (int visualIndex = 0; visualIndex < visibleRows.Count; visualIndex++)
+            // Only draw rows intersecting the viewport, with one row of overscan.
+            int firstVisible = 0;
+            while (firstVisible < visibleRows.Count && offsets[firstVisible + 1] < sv.y) firstVisible++;
+            int lastVisible = firstVisible;
+            while (lastVisible < visibleRows.Count && offsets[lastVisible] <= sv.y + body.height) lastVisible++;
+            for (int visualIndex = firstVisible; visualIndex < lastVisible; visualIndex++)
             {
                 int rowIndex = visibleRows[visualIndex];
-                Rect rowRect = new Rect(0, visualIndex * (RowHeight + 1), inner.width, RowHeight);
+                Rect rowRect = new Rect(0, offsets[visualIndex], inner.width, RowHeight);
                 bool selected = selectedTablePath == path && selectedRowIndex == rowIndex;
 
                 EditorGUI.DrawRect(rowRect, selected ? new Color(0.23f, 0.43f, 0.76f, 0.95f) :
@@ -773,6 +993,11 @@ namespace Dreamy.EditorTools
                 }
 
                 HandleRowContext(arr, path, rowRect, rowIndex);
+                float detailsY = rowRect.yMax + 1;
+                if (objectTable && rowObject != null)
+                    foreach (JProperty property in rowObject.Properties().ToList())
+                        detailsY += DrawExpanded(new Rect(0, detailsY, inner.width, 0), property.Value, property.Name + " · row " + (rowIndex + 1));
+                else DrawExpanded(new Rect(0, detailsY, inner.width, 0), rowToken, "Item " + (rowIndex + 1));
             }
 
             DrawDropMarker(path, inner.width, visibleRows.Count);
@@ -921,10 +1146,14 @@ namespace Dreamy.EditorTools
 
             if (token.Type == JTokenType.Object || token.Type == JTokenType.Array)
             {
-                Rect preview = new Rect(rect.x, rect.y, Mathf.Max(30, rect.width - 46), rect.height);
+                Rect preview = new Rect(rect.x, rect.y, Mathf.Max(0, rect.width - 88), rect.height);
                 Rect edit = new Rect(rect.xMax - 42, rect.y + 1, 42, rect.height - 2);
                 EditorGUI.DrawRect(preview, new Color(0.20f, 0.23f, 0.31f));
-                GUI.Label(new Rect(preview.x + 5, preview.y + 2, preview.width - 10, preview.height - 4), PreviewToken(token, 80), EditorStyles.miniLabel);
+                if (GUI.Button(preview, new GUIContent(PreviewToken(token, 80), "Expand/collapse below this row"), cellStyle))
+                    ToggleInline(token);
+
+                if (GUI.Button(new Rect(rect.xMax - 86, rect.y + 1, 42, rect.height - 2), new GUIContent(expandedValues.Contains(token) ? "▾" : "▸", "Expand/collapse below this row"), smallButtonStyle))
+                    ToggleInline(token);
 
                 if (GUI.Button(edit, "Edit", smallButtonStyle))
                 {
@@ -935,6 +1164,18 @@ namespace Dreamy.EditorTools
                 }
 
                 return;
+            }
+
+            if (token.Type == JTokenType.String)
+            {
+                string encoded = token.Value<string>()?.Trim();
+                if (!string.IsNullOrEmpty(encoded) && (encoded.StartsWith("{") || encoded.StartsWith("[")))
+                {
+                    Rect view = new Rect(rect.xMax - 42, rect.y, 42, rect.height);
+                    if (GUI.Button(view, new GUIContent(expandedValues.Contains(token) ? "▾" : "▸", "Expand/collapse below this row"), smallButtonStyle))
+                        ToggleInline(token);
+                    rect.width = Mathf.Max(0, rect.width - 46);
+                }
             }
 
             string oldValue = TokenToText(token);
@@ -1530,7 +1771,10 @@ namespace Dreamy.EditorTools
 
                 if (isDraggingRow)
                 {
-                    dragTargetVisualIndex = Mathf.Clamp(Mathf.RoundToInt(e.mousePosition.y / (RowHeight + 1)), 0, visibleRows.Count);
+                    dragTargetVisualIndex = visibleRows.Count;
+                    if (tableRowOffsets.TryGetValue(path, out float[] offsets))
+                        for (int i = 0; i < visibleRows.Count; i++)
+                            if (e.mousePosition.y < (offsets[i] + offsets[i + 1]) * 0.5f) { dragTargetVisualIndex = i; break; }
                     e.Use();
                     Repaint();
                 }
@@ -1541,7 +1785,8 @@ namespace Dreamy.EditorTools
         {
             if (draggingTablePath != path || !isDraggingRow) return;
 
-            float y = Mathf.Clamp(dragTargetVisualIndex, 0, visibleCount) * (RowHeight + 1);
+            float y = tableRowOffsets.TryGetValue(path, out float[] offsets)
+                ? offsets[Mathf.Clamp(dragTargetVisualIndex, 0, visibleCount)] : 0;
             EditorGUI.DrawRect(new Rect(0, y - 2, width, 3), new Color(0.45f, 0.72f, 1f));
         }
 
@@ -1607,6 +1852,7 @@ namespace Dreamy.EditorTools
             if (!IsObjectTable(arr))
                 return new List<string> { "value" };
 
+            if (cachedColumns.TryGetValue(arr, out List<string> cached)) return cached;
             List<string> result = new List<string>();
             HashSet<string> set = new HashSet<string>();
 
@@ -1629,6 +1875,7 @@ namespace Dreamy.EditorTools
             if (arr.Count > 0 && result.Count == 0)
                 result.Add("row_json");
 
+            cachedColumns[arr] = result;
             return result;
         }
 
@@ -1640,6 +1887,8 @@ namespace Dreamy.EditorTools
         private List<int> GetVisibleRows(JArray arr, string path)
         {
             string filter = tableFilter.TryGetValue(path, out string f) ? f : "";
+            if (cachedFilters.TryGetValue(arr, out string previous) && previous == filter && cachedRows.TryGetValue(arr, out List<int> cached))
+                return cached;
             List<int> rows = new List<int>();
 
             for (int i = 0; i < arr.Count; i++)
@@ -1648,6 +1897,8 @@ namespace Dreamy.EditorTools
                     rows.Add(i);
             }
 
+            cachedRows[arr] = rows;
+            cachedFilters[arr] = filter;
             return rows;
         }
 
@@ -1671,7 +1922,8 @@ namespace Dreamy.EditorTools
                 int sampleCount = Mathf.Min(arr.Count, 80);
                 for (int r = 0; r < sampleCount; r++)
                 {
-                    string value = objectTable ? TokenToText(GetCell(arr[r], key)) : TokenToText(arr[r]);
+                    JToken sample = objectTable ? GetCell(arr[r], key) : arr[r];
+                    string value = sample is JContainer ? PreviewToken(sample, 80) : TokenToText(sample);
                     width = Mathf.Max(width, Mathf.Clamp(value.Length * 7f + 70f, CellMinWidth, CellMaxWidth));
                 }
 
@@ -1764,6 +2016,8 @@ namespace Dreamy.EditorTools
 
         private string PreviewToken(JToken token, int max)
         {
+            if (token is JArray array) return "List [" + array.Count + "]";
+            if (token is JObject obj) return "Object { " + string.Join(", ", obj.Properties().Take(4).Select(p => p.Name)) + (obj.Count > 4 ? ", …" : "") + " }";
             string text = token == null ? "null" : token.ToString(Formatting.None).Replace("\n", " ").Replace("\r", "");
             return text.Length <= max ? text : text.Substring(0, max - 3) + "...";
         }
@@ -1867,18 +2121,16 @@ namespace Dreamy.EditorTools
                 string dir = GetSaveDirectory();
                 if (Directory.Exists(dir))
                 {
-                    foreach (string path in Directory.GetFiles(dir))
+                    // Include backup-only saves left by earlier deletions so they can be reset too.
+                    foreach (string path in Directory.GetFiles(dir).Select(GetPrimarySavePath).Distinct(StringComparer.Ordinal))
                     {
-                        if (IsVisibleSave(path))
+                        files.Add(new FileEntry
                         {
-                            files.Add(new FileEntry
-                            {
-                                AssetPath = "",
-                                FullPath = path,
-                                RelativePath = Path.GetFileName(path),
-                                DisplayName = Path.GetFileName(path)
-                            });
-                        }
+                            AssetPath = "",
+                            FullPath = path,
+                            RelativePath = Path.GetFileName(path),
+                            DisplayName = Path.GetFileName(path) + (File.Exists(path) ? "" : " (backup only)")
+                        });
                     }
                 }
             }
@@ -1907,9 +2159,23 @@ namespace Dreamy.EditorTools
         private void LoadFile(FileEntry file)
         {
             ClearVisualState();
+            rootToken = null;
+            editText = "";
+            originalRawFile = "";
+            originalPayloadWasString = false;
+            isDirty = false;
+            hasUnsavedChanges = false;
+            file.Dirty = false;
 
             try
             {
+                if (sourceMode == SourceMode.Datasave && !File.Exists(file.FullPath))
+                {
+                    parseError = true;
+                    parseErrorMessage = "Only backup/temp files remain for this save. Use Reset Save to remove them before testing.";
+                    SetStatus(parseErrorMessage, MessageType.Warning);
+                    return;
+                }
                 originalRawFile = File.ReadAllText(file.FullPath, Encoding.UTF8);
                 JToken token;
 
@@ -1919,6 +2185,9 @@ namespace Dreamy.EditorTools
                     {
                         parseError = true;
                         parseErrorMessage = error;
+                        editText = originalRawFile;
+                        viewMode = ViewMode.Text;
+                        SetStatus(error, MessageType.Error);
                         return;
                     }
                 }
@@ -1942,6 +2211,7 @@ namespace Dreamy.EditorTools
                 editText = originalRawFile;
                 parseError = true;
                 parseErrorMessage = ex.Message;
+                viewMode = ViewMode.Text;
                 SetStatus("Load failed: " + ex.Message, MessageType.Error);
             }
         }
@@ -1987,10 +2257,22 @@ namespace Dreamy.EditorTools
             }
         }
 
+        private void RequestSave()
+        {
+            if (!HasSelectedFile()) return;
+            FileEntry target = CurrentFile;
+            // Let delayed fields commit during this GUI event before writing the file.
+            GUI.FocusControl(null);
+            Repaint();
+            EditorApplication.delayCall += () =>
+            {
+                if (this != null && CurrentFile == target) SaveCurrent();
+            };
+        }
+
         private void SaveCurrent()
         {
             if (!HasSelectedFile()) return;
-
             JToken token;
             if (viewMode == ViewMode.Text)
             {
@@ -2010,6 +2292,11 @@ namespace Dreamy.EditorTools
 
             try
             {
+                if (!File.Exists(CurrentFile.FullPath) || File.ReadAllText(CurrentFile.FullPath, Encoding.UTF8) != originalRawFile)
+                {
+                    SetStatus("File changed or was deleted outside this window. Copy your JSON before reloading; save was cancelled.", MessageType.Warning);
+                    return;
+                }
                 if (autoBackup) Backup(CurrentFile.FullPath);
 
                 string output = sourceMode == SourceMode.DataConfig ? token.ToString(Formatting.Indented) : BuildSaveOutput(token);
@@ -2017,14 +2304,17 @@ namespace Dreamy.EditorTools
 
                 originalRawFile = output;
                 rootToken = token;
+                if (viewMode == ViewMode.Text) ClearVisualState();
                 editText = token.ToString(Formatting.Indented);
                 isDirty = false;
+                hasUnsavedChanges = false;
+                parseError = false;
+                parseErrorMessage = "";
                 CurrentFile.Dirty = false;
 
                 if (sourceMode == SourceMode.DataConfig)
                 {
                     AssetDatabase.ImportAsset(CurrentFile.AssetPath);
-                    AssetDatabase.Refresh();
                 }
 
                 SetStatus(sourceMode == SourceMode.Datasave ? "Payload saved." : "Config saved.", MessageType.Info);
@@ -2064,6 +2354,7 @@ namespace Dreamy.EditorTools
             try
             {
                 rootToken = JToken.Parse(editText);
+                ClearVisualState();
                 parseError = false;
                 parseErrorMessage = "";
                 viewMode = ViewMode.Visual;
@@ -2155,6 +2446,7 @@ namespace Dreamy.EditorTools
                 JToken token = JToken.Parse(viewMode == ViewMode.Text ? editText : rootToken.ToString(Formatting.None));
                 editText = token.ToString(Formatting.Indented);
                 rootToken = token;
+                ClearVisualState();
                 MarkDirty();
                 SetStatus("Formatted.", MessageType.Info);
             }
@@ -2178,6 +2470,7 @@ namespace Dreamy.EditorTools
             if (result == 1)
             {
                 isDirty = false;
+                hasUnsavedChanges = false;
                 if (HasSelectedFile()) CurrentFile.Dirty = false;
                 return true;
             }
@@ -2188,13 +2481,20 @@ namespace Dreamy.EditorTools
         private void MarkDirty()
         {
             isDirty = true;
+            hasUnsavedChanges = true;
+            saveChangesMessage = "Save changes to the selected Dreamy data file?";
             if (HasSelectedFile()) CurrentFile.Dirty = true;
         }
 
         private void OnTokenChanged()
         {
-            if (rootToken != null)
-                editText = rootToken.ToString(Formatting.Indented);
+            // Write decoded JSON back as a string, preserving its original storage type.
+            for (int i = inspection.Count - 1; i >= 0; i--)
+                if (inspection[i].EncodedSource != null)
+                    inspection[i].EncodedSource.Value = inspection[i].Token.ToString(Formatting.None);
+            cachedColumns.Clear();
+            cachedRows.Clear();
+            cachedFilters.Clear();
             MarkDirty();
             SetStatus("", MessageType.None);
         }
@@ -2206,12 +2506,22 @@ namespace Dreamy.EditorTools
             editText = "";
             originalRawFile = "";
             isDirty = false;
+            hasUnsavedChanges = false;
             parseError = false;
             ClearVisualState();
         }
 
         private void ClearVisualState()
         {
+            expandedValues.Clear();
+            inlinePages.Clear();
+            inlinePaths.Clear();
+            tableRowOffsets.Clear();
+            inspection.Clear();
+            drawnArrays.Clear();
+            cachedColumns.Clear();
+            cachedRows.Clear();
+            cachedFilters.Clear();
             collapsed.Clear();
             tableScroll.Clear();
             tableFilter.Clear();
@@ -2242,6 +2552,7 @@ namespace Dreamy.EditorTools
 
         private void CreateNewConfig()
         {
+            if (!ConfirmLeaveDirtyFile()) return;
             string folder = Path.GetFullPath(DefaultDataConfigFolder);
             Directory.CreateDirectory(folder);
 
@@ -2276,32 +2587,92 @@ namespace Dreamy.EditorTools
             EditorUtility.RevealInFinder(folder);
         }
 
+        public override void SaveChanges()
+        {
+            SaveCurrent();
+            if (!isDirty) base.SaveChanges();
+        }
+
+        public override void DiscardChanges()
+        {
+            isDirty = false;
+            if (HasSelectedFile()) CurrentFile.Dirty = false;
+            base.DiscardChanges();
+        }
+
+        private bool CanResetTestSaves()
+        {
+            if (!EditorApplication.isPlayingOrWillChangePlaymode) return true;
+            SetStatus("Stop Play Mode before resetting saves. The running game holds loaded data and can save it again.", MessageType.Warning);
+            EditorUtility.DisplayDialog(WindowTitle, "Stop Play Mode before resetting saves. Then reset and enter Play Mode again to test fresh data.", "OK");
+            return false;
+        }
+
+        private void DeleteSave(FileEntry file)
+        {
+            if (sourceMode != SourceMode.Datasave || file == null || !CanResetTestSaves()) return;
+            string message = "Reset test save '" + file.RelativePath + "'?\n\nThis deletes its main file, runtime backup (.bak), temporary file (.tmp), and Editor backups (.bak-*). No new backup is created. Other saves and production backup behavior are unchanged.";
+            if (file == CurrentFile && isDirty) message += "\nUnsaved edits will be discarded.";
+            if (!EditorUtility.DisplayDialog(WindowTitle, message, "Reset Save", "Cancel")) return;
+            try
+            {
+                int count = DeleteSaveFilesForTesting(file.FullPath);
+                if (file == CurrentFile) ClearCurrentFile();
+                RefreshFiles(false);
+                SetStatus("Reset: " + file.RelativePath + " (" + count + " file(s) removed, no backup created).", MessageType.Info);
+            }
+            catch (Exception ex) { SetStatus("Reset failed: " + ex.Message, MessageType.Error); }
+        }
+
         private void DeleteAllSaves()
         {
-            if (sourceMode != SourceMode.Datasave) return;
-            if (!EditorUtility.DisplayDialog(WindowTitle, "Delete all save files?", "Delete", "Cancel")) return;
-
+            if (sourceMode != SourceMode.Datasave || !CanResetTestSaves()) return;
+            if (!EditorUtility.DisplayDialog(WindowTitle, "Reset all listed test saves and their backups? No new backup is created. Unsaved edits will be discarded.", "Reset Saves", "Cancel")) return;
+            int removed = 0;
+            List<string> failures = new List<string>();
             foreach (FileEntry file in files.ToList())
             {
-                try
-                {
-                    if (autoBackup) Backup(file.FullPath);
-                    File.Delete(file.FullPath);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogException(ex);
-                }
+                try { removed += DeleteSaveFilesForTesting(file.FullPath); }
+                catch (Exception ex) { failures.Add(file.RelativePath + ": " + ex.Message); }
             }
-
             ClearCurrentFile();
             RefreshFiles(false);
+            SetStatus(failures.Count == 0 ? "Reset saves: " + removed + " file(s) removed, no backup created."
+                : "Reset incomplete: " + string.Join("; ", failures), failures.Count == 0 ? MessageType.Info : MessageType.Error);
+        }
+
+        private static string GetPrimarySavePath(string path)
+        {
+            string name = Path.GetFileName(path);
+            if (name.EndsWith(".bak", StringComparison.Ordinal) || name.EndsWith(".tmp", StringComparison.Ordinal))
+                return path.Substring(0, path.Length - 4);
+            int marker = name.IndexOf(".bak-", StringComparison.Ordinal);
+            return marker < 0 ? path : Path.Combine(Path.GetDirectoryName(path), name.Substring(0, marker));
+        }
+
+        private static int DeleteSaveFilesForTesting(string path)
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!Directory.Exists(directory)) return 0;
+            string name = Path.GetFileName(path);
+            // Delete recovery sources first; leave the primary intact if cleanup fails.
+            List<string> companions = Directory.GetFiles(directory)
+                .Where(candidate =>
+                {
+                    string candidateName = Path.GetFileName(candidate);
+                    return candidateName == name + ".bak" || candidateName == name + ".tmp" ||
+                           candidateName.StartsWith(name + ".bak-", StringComparison.Ordinal);
+                }).ToList();
+            int removed = 0;
+            foreach (string companion in companions) { File.Delete(companion); removed++; }
+            if (File.Exists(path)) { File.Delete(path); removed++; }
+            return removed;
         }
 
         private void Backup(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
-            File.Copy(path, path + ".bak-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"), true);
+            File.Copy(path, path + ".bak-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fffffff"), false);
         }
 
         private void RevealCurrent()
@@ -2318,6 +2689,8 @@ namespace Dreamy.EditorTools
             menu.AddItem(new GUIContent("Open"), false, delegate { SelectFile(index); });
             menu.AddItem(new GUIContent("Reveal"), false, delegate { EditorUtility.RevealInFinder(file.FullPath); });
             menu.AddItem(new GUIContent("Copy Path"), false, delegate { EditorGUIUtility.systemCopyBuffer = file.RelativePath; });
+            if (sourceMode == SourceMode.Datasave)
+                menu.AddItem(new GUIContent("Reset Save (no backup)"), false, delegate { DeleteSave(file); });
             menu.ShowAsContext();
         }
 
@@ -2347,14 +2720,6 @@ namespace Dreamy.EditorTools
         private static string NormalizePath(string path)
         {
             return path.Replace('\\', '/');
-        }
-
-        private static bool IsVisibleSave(string path)
-        {
-            return File.Exists(path) &&
-                   !path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) &&
-                   !path.EndsWith(".bak", StringComparison.OrdinalIgnoreCase) &&
-                   path.IndexOf(".bak-", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
         private sealed class StringInputWindow : EditorWindow
