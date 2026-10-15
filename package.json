@@ -1,6 +1,6 @@
 {
   "name": "com.dreamy.editor-tools",
-  "version": "0.2.2",
+  "version": "1.0.1",
   "displayName": "Dreamy Editor Tools",
   "description": "Editor-only utilities for Dreamy internal Unity projects.",
   "unity": "6000.0",
