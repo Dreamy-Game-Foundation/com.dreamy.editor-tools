@@ -67,6 +67,20 @@ namespace Dreamy.EditorTools
             EditorApplication.ExecuteMenuItem("File/Save Project");
         }
 
+        [Shortcut("Dreamy/Clear Save Data", KeyCode.C,
+            ShortcutModifiers.Action |
+            ShortcutModifiers.Shift |
+            ShortcutModifiers.Alt)]
+        public static void ClearSaveData()
+        {
+            // Keep Datasave optional and reuse its confirmation and save path policy.
+            if (!EditorApplication.ExecuteMenuItem("Tools/Dreamy/Save/Clear Save Data"))
+            {
+                EditorUtility.DisplayDialog("Dreamy Save",
+                    "Clear Save Data requires the Dreamy Datasave package.", "OK");
+            }
+        }
+
         [Shortcut("Dreamy/Scene/Previous", KeyCode.PageUp,
             ShortcutModifiers.Alt)]
         public static void OpenPreviousScene()

@@ -31,6 +31,8 @@ Package chỉ có Editor; không cài service trong GameInstaller, không thêm 
 - Tools/Dreamy/Project: mở manifest hoặc clear console; PlayerPrefs/Clear All phục vụ reset local.
 
 Thiết lập riêng của Editor được lưu theo project. Menu xử lý save nằm ở Datasave. Xem Edit > Shortcuts > Dreamy để đổi phím; F5 compile, Ctrl/Cmd+L khóa Inspector, Alt+PageUp/PageDown chuyển scene, Alt+R reload scene.
+Phím tắt **Ctrl+Shift+Alt+C** (macOS: **Cmd+Shift+Option+C**) gọi `Tools/Dreamy/Save/Clear Save Data`, giữ hộp thoại xác nhận trước khi xóa. Cần cài Dreamy Datasave; có thể đổi tổ hợp trong **Edit > Shortcuts > Dreamy/Clear Save Data**.
+
 ## Sample
 
 Manifest hiện không khai báo sample để import qua Package Manager.

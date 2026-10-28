@@ -2,6 +2,10 @@
 
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+- Added configurable Dreamy/Clear Save Data shortcut (Ctrl+Shift+Alt+C; Cmd+Shift+Option+C on macOS), delegating to Datasave with its existing confirmation dialog.
+
 ## [1.0.1] - 2026-10-15
 
 - Resume increasing release versions above the highest existing v1.x tag after the 0.2.2 version regression.
