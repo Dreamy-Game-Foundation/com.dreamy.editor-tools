@@ -4,13 +4,15 @@ Package thuộc Dreamy Game Studio. Hướng dẫn dưới đây mô tả cấu 
 
 ## Cài package
 
-Phiên bản hiện tại: **1.0.1** — Git tag `v1.0.1`. Version này tiếp nối tag 1.x cao nhất đã phát hành; các tag 0.x cũ được giữ nguyên để không làm hỏng tham chiếu lịch sử.
+Phiên bản chuẩn bị phát hành: **1.1.0**. Bổ sung Game View Screenshot và shortcut Clear Save Data; chưa tạo/push tag `v1.1.0`. Package yêu cầu Unity 6000.4 để khớp Main Toolbar API đang dùng; các tag cũ được giữ nguyên.
 
 Dùng Unity 6000.4 trở lên. Sandbox đã tham chiếu package bằng `file:../LocalPackages/com.dreamy.editor-tools`. Project khác dùng Package Manager > + > Install package from disk và chọn package.json, hoặc Git URL của repository nội bộ. Cài cả dependency Dreamy/Git vào manifest của game; version dependency không tự cấu hình registry riêng.
 
 Dependency trực tiếp theo package.json:
 
 - `com.unity.nuget.newtonsoft-json` (3.2.1)
+- `com.unity.modules.screencapture` (1.0.0)
+- `com.unity.modules.imageconversion` (1.0.0)
 
 ## Cấu trúc và asmdef
 
@@ -56,3 +58,36 @@ Package này không có panel cần đăng ký vào Addressables Group. Việc �
 Main Toolbar API hiện dùng trong package yêu cầu Unity 6000.4; sandbox được kiểm tra với 6000.4.12f1.
 
 Kiểm tra logic dữ liệu (không thay thế kiểm tra GUI trong Unity): chạy `python3 LocalPackages/com.dreamy.editor-tools/Tests~/validate-data-debugger.py` từ sandbox; cần .NET SDK 10 và Newtonsoft.Json đã được Unity tải vào Library/PackageCache.
+
+## Game View Screenshot (1.1.0)
+
+Mở **Tools > Dreamy > Capture > Game View Screenshot**. Vào Play Mode, để Game View tiếp tục render, chọn chế độ rồi bấm **Capture Game View**:
+
+| Chế độ | Kết quả |
+| --- | --- |
+| **Copy** (mặc định) | Copy ảnh vào clipboard để paste; không tạo file ảnh/thư mục/temp |
+| **Save** | Lưu PNG vào thư mục đã chọn; không thay đổi clipboard |
+| **Copy + Save** | Cùng một frame được copy và lưu; báo kết quả từng thao tác nếu lỗi |
+
+Có countdown 0/3/5 giây, Cancel, preview Fit/100%, **Copy Image** và **Save As…** từ ảnh vừa chụp. Save As chọn thư mục rồi tạo tên PNG duy nhất. **Copy Path**, **Reveal** và **Open** chỉ bật khi có file đã lưu. Copy Path thay clipboard thành text, vì vậy không chạy tự động sau Copy Image.
+
+Menu **Capture Game View** và shortcut **Dreamy/Capture Game View** dùng lại chế độ/countdown/thư mục đã chọn. Shortcut mặc định chưa gán, có thể cấu hình trong **Edit > Shortcuts**. **Open Capture Folder** chỉ mở thư mục đã tồn tại.
+
+Ảnh lấy trực tiếp Game View ở độ phân giải hiện tại, gồm UI đã render. Không chụp desktop/Scene View, không tự đổi aspect/resolution và không tự Play/unpause. Bản đầu chưa hỗ trợ Edit Mode, Editor pause hoặc batch/headless capture. Khi thiếu frame sẽ timeout sau 10 giây; countdown dùng thời gian thực, không phụ thuộc timeScale.
+
+### Clipboard Windows và Ubuntu
+
+- Windows: dùng clipboard ảnh Win32 (CF_DIB); không cần tool hệ thống ngoài Unity. Native paste trên Windows vẫn cần receipt từ Windows host; compile Linux không chứng minh clipboard Windows hoạt động.
+- Ubuntu Wayland: cần executable **wl-copy** từ package `wl-clipboard` trong PATH của Unity. Có thể cài bằng `sudo apt install wl-clipboard`, sau đó mở lại Unity để nhận PATH.
+- Ubuntu X11: cần **xclip** (`sudo apt install xclip`). Session Wayland ưu tiên wl-copy, không tự chuyển sang clipboard X11.
+- Trong cửa sổ có **Clipboard requirements**: hiển thị yêu cầu theo Windows/Ubuntu Wayland/X11. Khi thiếu helper, phần này luôn hiện, kể cả trước Play Mode. Lệnh cài đặt có thể chọn text hoặc bấm **Copy Install Command** rồi paste vào Terminal; nút chỉ copy lệnh, không tự chạy/cài đặt. Sau khi cài, mở lại Unity.
+- Thiếu helper: UI giải thích và cho phép chọn **Save**. Package không tự cài tool và không tự chuyển Copy thành Save.
+- Helper nhận PNG qua stdin; không tạo file ảnh tạm. Clipboard owner có thể sống sau khi đóng cửa sổ screenshot; thời gian giữ nội dung phụ thuộc desktop/clipboard manager. Không cam kết mọi app đều nhận paste ảnh.
+
+Output mặc định `<project>/Screenshots/`; nên thêm thư mục này vào `.gitignore` của consumer. File có tên UTC + ID duy nhất, không ghi đè. Preferences lưu riêng theo project ở `UserSettings/DreamyCapture/Preferences.asset`; Copy-only vẫn có thể lưu preferences. Công cụ không kiểm soát chính sách lưu lịch sử của clipboard manager hệ điều hành.
+
+Preview chỉ giữ ảnh cuối, giải phóng khi đóng cửa sổ hoặc reload. Đóng cửa sổ hủy capture do cửa sổ khởi tạo; capture từ menu/shortcut có owner độc lập. Khi output đã copy/lưu thành công, Cancel không rollback kết quả đó. Giới hạn ảnh là 32 megapixel, đồng thời kiểm tra dự toán bộ nhớ tạm 512 MiB (Windows có thể bị giới hạn sớm hơn do bản sao DIB). Đây là dự toán bảo vệ, không phải peak memory đã đo. Ảnh lớn có thể gây hitch khi readback/encode.
+
+### Kiểm tra
+
+Test assembly **Dreamy.EditorTools.Tests.Editor** chỉ dành cho Editor. Thêm `com.dreamy.editor-tools` vào `testables` của manifest consumer để chạy nhóm **Dreamy.EditorTools.Tests**. Tests kiểm tra các chế độ, hủy, lỗi từng đích, không ghi đè và batch guard; paste/capture thật cần GUI host tương ứng.

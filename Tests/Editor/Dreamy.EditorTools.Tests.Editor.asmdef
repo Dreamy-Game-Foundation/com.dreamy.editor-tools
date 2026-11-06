@@ -1,0 +1,7 @@
+{
+  "name": "Dreamy.EditorTools.Tests.Editor",
+  "references": ["Dreamy.EditorTools.Editor"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}
