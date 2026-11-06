@@ -35,6 +35,50 @@ Package chỉ có Editor; không cài service trong GameInstaller, không thêm 
 Thiết lập riêng của Editor được lưu theo project. Menu xử lý save nằm ở Datasave. Xem Edit > Shortcuts > Dreamy để đổi phím; F5 compile, Ctrl/Cmd+L khóa Inspector, Alt+PageUp/PageDown chuyển scene, Alt+R reload scene.
 Phím tắt **Ctrl+Shift+Alt+C** (macOS: **Cmd+Shift+Option+C**) gọi `Tools/Dreamy/Save/Clear Save Data`, giữ hộp thoại xác nhận trước khi xóa. Cần cài Dreamy Datasave; có thể đổi tổ hợp trong **Edit > Shortcuts > Dreamy/Clear Save Data**.
 
+### Dreamy Package Manager
+
+Mở **Tools > Dreamy > Package > Package Manager**:
+
+- **Dreamy Catalog** liệt kê các package chính thức và package Dreamy đã cài nhưng chưa có catalog. Xem installed version resolved, nguồn Git/Registry/Local/Embedded, direct/transitive, latest stable hoặc prerelease, lỗi và thời điểm kiểm tra. **Check Updates** đọc tag và kiểm tra `package.json` tại commit; không dùng version local làm latest.
+- **Details** có chọn version, repository/tags/changelog, dependency, minimum Unity và **Preview Install / Preview Selected Version**. Preview kiểm tra dependency trước khi Apply; Git pin commit cụ thể. Dependency Dreamy thiếu được tìm qua catalog; dependency bên thứ ba thiếu mapping phải bổ sung catalog hoặc cài trước. Không hỗ trợ tùy ý các biểu thức version range ngoài minimum SemVer của UPM.
+- Package local/embedded mặc định có **Open Folder**. **Switch Source to Catalog…** là thao tác riêng có preview; tool không pull/checkout submodule. Cập nhật dependency không tự chuyển nguồn local. Preview có thể thêm direct dependency để pin version đang là transitive.
+- **Project Packages** giữ Add bằng ID/Git URL, Remove, Resolve, mở manifest/lock. Remove bị chặn khi còn package phụ thuộc. Add thủ công dùng trực tiếp UPM; dùng catalog để có dependency preview.
+- Thao tác UPM được điều phối ngoài window và đối chiếu lại sau domain reload, không tự gửi lại request. Sau hoàn thành kiểm tra Console để xác nhận compile. **Restore Last Package Change** chỉ khả dụng khi manifest/lock còn khớp snapshot sau thao tác; không khôi phục các asset/project file khác. Restore không áp dụng cho Add thủ công không có plan.
+- **Export** ghi báo cáo JSON theo vị trí được chọn. Cache metadata và operation snapshot nằm trong `Library/DreamyPackageManager/`; không cần commit.
+
+#### Bổ sung package về sau
+
+Catalog được nạp theo thứ tự **bundled → remote → project overrides**; entry sau có cùng ID ghi đè entry trước. UI không hardcode danh sách package.
+
+1. Mở **Catalog Settings**, nhập Package ID, Source (GitHub Git hoặc registry UPM đã cấu hình), Repository URL, UPM subfolder nếu có, Category; bấm **Add / Override Project Entry**.
+2. Entry được lưu vào `ProjectSettings/DreamyPackageCatalog.json`, có thể commit cùng project. **Open Project Catalog** cho phép sửa displayName, mô tả, documentation hoặc xóa override; **Reload Catalog** áp dụng lại.
+3. Muốn mọi consumer có package mới: cập nhật `Editor/Package/DreamyPackageCatalog.json` trong editor-tools và phát hành bản package; hoặc cung cấp JSON schema tương tự qua URL HTTPS trong **Remote catalog URL** rồi **Fetch Catalog**. Lỗi mạng/schema giữ bản catalog hợp lệ trước đó. **Clear Remote** bỏ catalog remote đã cache. URL remote được nhớ riêng trên máy; cần Fetch lại khi muốn danh sách mới.
+
+Ví dụ catalog project/remote:
+
+```json
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "com.dreamy.new-feature",
+      "displayName": "Dreamy New Feature",
+      "category": "Feature",
+      "source": "git",
+      "repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.new-feature",
+      "packagePath": "",
+      "description": "Short package description"
+    }
+  ]
+}
+```
+
+Git release discovery hiện hỗ trợ GitHub HTTPS, SemVer tags (`v1.2.3` hoặc `1.2.3`) và metadata khớp package ID/version. Repo monorepo dùng `packagePath`. Registry entry đặt `source: "registry"` và sử dụng registry đã cấu hình trong Unity. Tool không tự cấu hình scoped registry. Không tự khám phá mọi repo trong GitHub org: release owner thêm package vào catalog để xác định package chính thức.
+
+Repo private/rate limit: cấu hình `DREAMY_GITHUB_TOKEN` (hoặc `GH_TOKEN`/`GITHUB_TOKEN`) trong môi trường **trước khi mở Unity**; token chỉ gửi đến `api.github.com`, không ghi vào catalog/preferences/cache. Git install dùng credential Git của máy do UPM quản lý, độc lập với token tra metadata. Tool không yêu cầu GitHub CLI. Các tag không khớp metadata bị đánh dấu invalid; không xem lỗi mạng/auth là Up to date. Dữ liệu cache luôn ghi thời điểm kiểm tra; refresh thất bại giữ version cũ kèm lỗi, chặn Apply đến khi Retry thành công.
+
+Minimum Unity/UPM compatibility là kiểm tra metadata, không phải chứng nhận tương thích API hay gameplay. Planner chặn các dependency chưa xác định; không tự nâng hàng loạt. Update Selected/Update All và import sample chưa nằm trong bản này.
+
 ## Sample
 
 Manifest hiện không khai báo sample để import qua Package Manager.

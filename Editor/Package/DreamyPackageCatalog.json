@@ -1,0 +1,194 @@
+{
+  "SchemaVersion": 1,
+  "Packages": [
+    {
+      "Id": "com.dreamy.assets",
+      "DisplayName": "Dreamy Assets",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.assets",
+      "PackagePath": "",
+      "Description": "Addressables and Resources asset loader adapted from the local Base.LoadAsset flow: LiveSingleton, UniTask requests, cache, progress, and sprite atlas helper."
+    },
+    {
+      "Id": "com.dreamy.audio",
+      "DisplayName": "Dreamy Audio",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.audio",
+      "PackagePath": "",
+      "Description": "Library-driven audio playback, mixer bus control, pooling, validation, and gameplay trigger components for DreamyBase projects."
+    },
+    {
+      "Id": "com.dreamy.connectivity",
+      "DisplayName": "Dreamy Connectivity",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.connectivity",
+      "PackagePath": "",
+      "Description": "Injectable connectivity checks, safe action recovery and mobile settings. Optional production UI integration is provided as a sample."
+    },
+    {
+      "Id": "com.dreamy.core",
+      "DisplayName": "Dreamy Core",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.core",
+      "PackagePath": "",
+      "Description": "Foundation primitives: ServiceLocator, EventBus, StateMachine, Singleton, AppLifecycle, Logger, pooling contracts, and generic extensions."
+    },
+    {
+      "Id": "com.dreamy.dataconfig",
+      "DisplayName": "Dreamy Data Config",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.dataconfig",
+      "PackagePath": "",
+      "Description": "Typed, read-only JSON configuration tables with validation and pluggable sources."
+    },
+    {
+      "Id": "com.dreamy.datasave",
+      "DisplayName": "Dreamy Datasave",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.datasave",
+      "PackagePath": "",
+      "Description": "Versioned JSON save/load service with atomic writes, migration hooks, and optional codecs."
+    },
+    {
+      "Id": "com.dreamy.debugger",
+      "DisplayName": "Dreamy Debugger",
+      "Category": "Tool",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.debugger",
+      "PackagePath": "",
+      "Description": "Independent internal Unity debugger with responsive Dreamy overlay, grouped cheats, FPS HUD, async screenshots, durable reports and relay delivery."
+    },
+    {
+      "Id": "com.dreamy.editor-tools",
+      "DisplayName": "Dreamy Editor Tools",
+      "Category": "Tool",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.editor-tools",
+      "PackagePath": "",
+      "Description": "Editor-only utilities for Dreamy internal Unity projects."
+    },
+    {
+      "Id": "com.dreamy.feature",
+      "DisplayName": "Dreamy Feature",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature",
+      "PackagePath": "",
+      "Description": "Lightweight shared contracts, data, enums, and utilities for casual game features."
+    },
+    {
+      "Id": "com.dreamy.feature.battle-pass",
+      "DisplayName": "Dreamy Battle Pass",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.battle-pass",
+      "PackagePath": "",
+      "Description": "Offline seasonal progression with Free/Premium tracks and recoverable Economy claims."
+    },
+    {
+      "Id": "com.dreamy.feature.daily-reward",
+      "DisplayName": "Dreamy Daily Reward",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.daily-reward",
+      "PackagePath": "",
+      "Description": "Reusable, MVP-based daily reward feature with JSON configuration and host-owned UI and reward delivery."
+    },
+    {
+      "Id": "com.dreamy.feature.economy",
+      "DisplayName": "Dreamy Economy Contracts",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.economy",
+      "PackagePath": "",
+      "Description": "Shared persistent resource and inventory owner, idempotent reward destinations, grants, spend/exchange and resource recovery contracts."
+    },
+    {
+      "Id": "com.dreamy.feature.lucky-wheel",
+      "DisplayName": "Dreamy Lucky Wheel",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.lucky-wheel",
+      "PackagePath": "",
+      "Description": "Reusable weighted lucky wheel with recoverable, idempotent economy rewards and host-owned presentation."
+    },
+    {
+      "Id": "com.dreamy.feature.missions",
+      "DisplayName": "Dreamy Missions",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.missions",
+      "PackagePath": "",
+      "Description": "Persistent one-time counter missions with explicit progress events and claimable economy rewards."
+    },
+    {
+      "Id": "com.dreamy.feature.progression",
+      "DisplayName": "Dreamy Progression",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.progression",
+      "PackagePath": "",
+      "Description": "Reusable sequential-level and experience-based progression with persistent idempotent advancement and optional economy rewards."
+    },
+    {
+      "Id": "com.dreamy.feature.settings",
+      "DisplayName": "Dreamy Settings",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.settings",
+      "PackagePath": "",
+      "Description": "Reusable MVP settings for audio/haptics, optional language selection, and host platform actions."
+    },
+    {
+      "Id": "com.dreamy.feature.shop",
+      "DisplayName": "Dreamy Shop",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.shop",
+      "PackagePath": "",
+      "Description": "Reusable MVP shop feature with JSON catalog configuration and atomic resource exchanges."
+    },
+    {
+      "Id": "com.dreamy.feature.tutorial",
+      "DisplayName": "Dreamy Tutorial",
+      "Category": "Feature",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feature.tutorial",
+      "PackagePath": "",
+      "Description": "Checkpointed tutorial flows with UI and 3D target adapters."
+    },
+    {
+      "Id": "com.dreamy.feedback",
+      "DisplayName": "Dreamy Feedback",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.feedback",
+      "PackagePath": "",
+      "Description": "Reusable feedback framework for mobile and casual Unity games: VFX, haptics, floating text, icon fly, screen feedback, camera shake, and optional sequences."
+    },
+    {
+      "Id": "com.dreamy.localization",
+      "DisplayName": "Dreamy Localization",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.localization",
+      "PackagePath": "",
+      "Description": "JSON-per-locale authoring and Unity Localization runtime bindings for Dreamy projects."
+    },
+    {
+      "Id": "com.dreamy.ui",
+      "DisplayName": "Dreamy UI",
+      "Category": "Foundation",
+      "Source": "git",
+      "Repository": "https://github.com/Dreamy-Game-Foundation/com.dreamy.ui",
+      "PackagePath": "",
+      "Description": "Reusable Unity UI panel, tab, button, safe area, and tween helpers inspired by the local Base.UI flow."
+    }
+  ]
+}

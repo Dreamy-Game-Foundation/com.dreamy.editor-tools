@@ -4,6 +4,11 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+- Expanded Dreamy Package Manager with a portable, versioned package catalog, project additions/overrides and optional remote catalogs; new package entries require no C# changes.
+- Added resolved installed/source/direct/transitive views, search/filters, verified GitHub release tags, registry versions, stable/prerelease selection, cache/error/retry states, package details and JSON reports.
+- Added dependency change previews, commit-pinned install/update, explicit source switching for local packages, serialized UPM operations, reload reconciliation and guarded manifest/lock snapshot restore.
+- Added focused Editor regression coverage for catalog extension, version ordering, dependency safety, source protection, network failures and cancellation.
+
 ## [1.1.0] - 2026-11-06
 
 - Added in-window clipboard requirements and a Copy Install Command button for Ubuntu Wayland/X11; Windows shows that no extra installation is needed.
