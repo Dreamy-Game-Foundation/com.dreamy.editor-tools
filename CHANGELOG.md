@@ -2,7 +2,9 @@
 
 All notable changes to this package will be documented in this file.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-10
+
+Source version prepared locally; no tag or publication is implied. Additive Package Manager capabilities warrant a minor version bump; no serialized asset migration is required.
 
 - Expanded Dreamy Package Manager with a portable, versioned package catalog, project additions/overrides and optional remote catalogs; new package entries require no C# changes.
 - Added resolved installed/source/direct/transitive views, search/filters, verified GitHub release tags, registry versions, stable/prerelease selection, cache/error/retry states, package details and JSON reports.

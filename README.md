@@ -4,7 +4,7 @@ Package thuộc Dreamy Game Studio. Hướng dẫn dưới đây mô tả cấu 
 
 ## Cài package
 
-Phiên bản chuẩn bị phát hành: **1.1.0**. Bổ sung Game View Screenshot và shortcut Clear Save Data; chưa tạo/push tag `v1.1.0`. Package yêu cầu Unity 6000.4 để khớp Main Toolbar API đang dùng; các tag cũ được giữ nguyên.
+Phiên bản chuẩn bị phát hành: **1.2.0**. Bổ sung Package Manager với catalog mở rộng, kiểm tra phiên bản và cập nhật có preview/khôi phục; bao gồm Game View Screenshot và shortcut Clear Save Data từ 1.1.0. Chưa tạo/push tag `v1.2.0`. Package yêu cầu Unity 6000.4 để khớp Main Toolbar API đang dùng; các tag cũ được giữ nguyên.
 
 Dùng Unity 6000.4 trở lên. Sandbox đã tham chiếu package bằng `file:../LocalPackages/com.dreamy.editor-tools`. Project khác dùng Package Manager > + > Install package from disk và chọn package.json, hoặc Git URL của repository nội bộ. Cài cả dependency Dreamy/Git vào manifest của game; version dependency không tự cấu hình registry riêng.
 
